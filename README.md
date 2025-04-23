@@ -51,7 +51,7 @@ dependencyResolutionManagement {
 
 ```groovy
 dependencies {
-	        implementation 'com.github.azheng95:EventFlow:Tag:0.0.1'
+	        implementation 'com.github.azheng95:EventFlow:0.0.1'
 }
 ```
 
