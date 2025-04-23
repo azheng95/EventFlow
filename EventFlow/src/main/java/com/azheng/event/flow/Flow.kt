@@ -185,32 +185,34 @@ inline fun <reified T> LifecycleOwner.receiveEventLive(
     noinline block: suspend CoroutineScope.(event: T) -> Unit
 ): Job {
     val coroutineScope = FlowScope(this, lifeEvent)
-    // 用于存储最后一次事件的容器
+    // 预先创建LiveData和观察者（如果需要只接收最新事件）
     val latestEventContainer = AtomicReference<T?>(null)
+    val singleLiveData = if (onlyReceiveLatest) {
+        MutableLiveData<T>().apply {
+            observe(this@receiveEventLive) { event ->
+                if (event == latestEventContainer.get()) {
+                    coroutineScope.launch { block(event) }
+                }
+            }
+        }
+    } else null
     return coroutineScope.launch {
         eventFlow
             .filter { bus -> bus.event is T && (tags.isEmpty() || tags.contains(bus.tag)) }
             .collect { bus ->
-                val liveData = if (onlyReceiveLatest) {
-                    // 如果设置了只接收最新值，使用单一LiveData实例
-                    latestEventContainer.set(bus.event as T)
-                    MutableLiveData<T>().apply {
-                        observe(this@receiveEventLive) { event ->
-                            // 确保只处理最新的事件
-                            if (event == latestEventContainer.get()) {
-                                coroutineScope.launch { block(event) }
-                            }
-                        }
-                    }
+                val event = bus.event as T
+
+                if (onlyReceiveLatest && singleLiveData != null) {
+                    latestEventContainer.set(event)
+                    singleLiveData.value = event
                 } else {
                     // 原有行为：每个事件创建新的LiveData
                     MutableLiveData<T>().apply {
                         observe(this@receiveEventLive) { coroutineScope.launch { block(it) } }
+                        value = event
                     }
                 }
-                // 设置LiveData的值
-                liveData.value = bus.event as T
-        }
+            }
     }
 }
 
@@ -253,11 +255,15 @@ fun LifecycleOwner.receiveTag(
 ): Job {
     val coroutineScope = FlowScope(this, lifeEvent)
     return coroutineScope.launch {
-        eventFlow.collect { bus ->
-            if (bus.event is FlowTag && !bus.tag.isNullOrBlank() && tags.contains(bus.tag)) {
-                block(bus.tag)
+        eventFlow
+            .filter { bus ->
+                bus.event is FlowTag &&
+                        !bus.tag.isNullOrBlank() &&
+                        tags.contains(bus.tag)
             }
-        }
+            .collect { bus ->
+                bus.tag?.let { block(it) }
+            }
     }
 }
 
@@ -277,13 +283,64 @@ fun LifecycleOwner.receiveTagLive(
 ): Job {
     val coroutineScope = FlowScope(this, lifeEvent)
     return coroutineScope.launch {
-        eventFlow.collect { bus ->
-            if (bus.event is FlowTag && !bus.tag.isNullOrBlank() && tags.contains(bus.tag)) {
+        eventFlow
+            .filter { bus ->
+                bus.event is FlowTag &&
+                        !bus.tag.isNullOrBlank() &&
+                        tags.contains(bus.tag)
+            }
+            .collect { bus ->
                 val liveData = MutableLiveData<String>()
                 liveData.observe(this@receiveTagLive) { coroutineScope.launch { block(it) } }
                 liveData.value = bus.tag
             }
+    }
+}
+
+/**
+ * 接收特定标签的事件，并通过LiveData将事件传递给UI线程处理
+ *
+ * @param tags 要监听的标签数组，为空时接收所有标签
+ * @param lifeEvent 生命周期事件，默认为ON_DESTROY时停止监听
+ * @param onlyReceiveLatest 回到前台后是否只接收最后一次的值，默认为false
+ * @param block 接收到标签时执行的挂起函数
+ * @return 返回可用于取消监听的Job对象
+ */
+fun LifecycleOwner.receiveTagLive(
+    vararg tags: String?,
+    lifeEvent: Lifecycle.Event = Lifecycle.Event.ON_DESTROY,
+    onlyReceiveLatest: Boolean = false,
+    block: suspend CoroutineScope.(tag: String) -> Unit
+): Job {
+    val coroutineScope = FlowScope(this, lifeEvent)
+    // 预先创建LiveData和观察者（如果需要只接收最新事件）
+    val latestTagContainer = AtomicReference<String?>(null)
+    val singleLiveData = if (onlyReceiveLatest) {
+        MutableLiveData<String>().apply {
+            observe(this@receiveTagLive) { tag ->
+                if (tag == latestTagContainer.get()) {
+                    coroutineScope.launch { block(tag) }
+                }
+            }
         }
+    } else null
+
+    return coroutineScope.launch {
+        eventFlow
+            .filter { bus -> bus.event is FlowTag && !bus.tag.isNullOrBlank() && tags.contains(bus.tag) }
+            .collect { bus ->
+                val tag = bus.tag
+                if (onlyReceiveLatest && singleLiveData != null) {
+                    latestTagContainer.set(tag)
+                    singleLiveData.value = tag
+                } else {
+                    // 每个事件创建新的LiveData
+                    MutableLiveData<String>().apply {
+                        observe(this@receiveTagLive) { coroutineScope.launch { block(it) } }
+                        value = tag
+                    }
+                }
+            }
     }
 }
 
@@ -302,11 +359,15 @@ fun receiveTagHandler(
 ): Job {
     val coroutineScope = FlowScope()
     return coroutineScope.launch {
-        eventFlow.collect { bus ->
-            if (bus.event is FlowTag && !bus.tag.isNullOrEmpty() && tags.contains(bus.tag)) {
-                block(bus.tag)
+        eventFlow
+            .filter { bus ->
+                bus.event is FlowTag &&
+                        !bus.tag.isNullOrEmpty() &&
+                        tags.contains(bus.tag)
             }
-        }
+            .collect { bus ->
+                bus.tag?.let { block(it) }
+            }
     }
 }
 

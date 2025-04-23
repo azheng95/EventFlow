@@ -1,7 +1,9 @@
 package com.azheng.event.flow
 
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.runBlocking
 
 /**
  * 基于Kotlin Flow实现的事件总线
@@ -13,6 +15,7 @@ object FlowEventBus {
      * MutableSharedFlow允许多个收集器订阅同一个流
      */
     private lateinit var _eventFlow: MutableSharedFlow<FlowEvent<*>>
+    private val initializationCompleted = CompletableDeferred<Unit>()
 
     /**
      * 供外部访问的只读流
@@ -21,7 +24,10 @@ object FlowEventBus {
     @PublishedApi
     internal val eventFlow: SharedFlow<FlowEvent<*>>
         get() {
-            ensureInitialized()  // 确保已初始化
+            ensureInitialized()
+            runBlocking {
+                initializationCompleted.await()
+            }
             return _eventFlow
         }
 
@@ -44,9 +50,9 @@ object FlowEventBus {
                 onBufferOverflow = config.bufferOverflow           // 缓冲区溢出策略
             )
             initialized = true
+            initializationCompleted.complete(Unit)
         }
     }
-
     /**
      * 确保事件总线已初始化
      * 如果未初始化，则使用默认配置进行初始化
@@ -64,6 +70,8 @@ object FlowEventBus {
      */
     suspend fun <T> emitEvent(event: T, tag: String?) {
         ensureInitialized()
+        // 等待初始化完成
+        initializationCompleted.await()
         _eventFlow.emit(FlowEvent(event, tag))
     }
 
