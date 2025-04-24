@@ -1,9 +1,8 @@
 package com.azheng.event.flow
 
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
-import kotlinx.coroutines.runBlocking
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * 基于Kotlin Flow实现的事件总线
@@ -15,7 +14,6 @@ object FlowEventBus {
      * MutableSharedFlow允许多个收集器订阅同一个流
      */
     private lateinit var _eventFlow: MutableSharedFlow<FlowEvent<*>>
-    private val initializationCompleted = CompletableDeferred<Unit>()
 
     /**
      * 供外部访问的只读流
@@ -25,16 +23,13 @@ object FlowEventBus {
     internal val eventFlow: SharedFlow<FlowEvent<*>>
         get() {
             ensureInitialized()
-            runBlocking {
-                initializationCompleted.await()
-            }
             return _eventFlow
         }
 
     /**
-     * 标记事件总线是否已初始化
+     * 标记事件总线是否已初始化 原子布尔值,更加线程安全
      */
-    private var initialized = false
+    private val initialized = AtomicBoolean(false)
 
     /**
      * 初始化事件总线
@@ -42,23 +37,26 @@ object FlowEventBus {
      * @param config 事件总线配置，默认使用FlowEventBusConfig.DEFAULT
      */
     @Synchronized
-    fun init(config: FlowEventBusConfig = FlowEventBusConfig.DEFAULT) {
-        if (!initialized) {
+    fun init(config: FlowEventBusConfig = FlowEventBusConfig.DEFAULT): Boolean {
+        if (!initialized.get()) {
             _eventFlow = MutableSharedFlow(
                 replay = config.replaySize,            // 缓存的事件数量
                 extraBufferCapacity = config.extraBufferCapacity,  // 额外缓冲区容量
                 onBufferOverflow = config.bufferOverflow           // 缓冲区溢出策略
             )
-            initialized = true
-            initializationCompleted.complete(Unit)
+            initialized.set(true)
+            return true
         }
+        return false
     }
+
+
     /**
      * 确保事件总线已初始化
      * 如果未初始化，则使用默认配置进行初始化
      */
     private fun ensureInitialized() {
-        if (!initialized) {
+        if (!initialized.get()) {
             init()
         }
     }
@@ -70,8 +68,6 @@ object FlowEventBus {
      */
     suspend fun <T> emitEvent(event: T, tag: String?) {
         ensureInitialized()
-        // 等待初始化完成
-        initializationCompleted.await()
         _eventFlow.emit(FlowEvent(event, tag))
     }
 
