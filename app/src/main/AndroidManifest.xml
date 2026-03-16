@@ -24,7 +24,7 @@
         </activity>
 
         <activity
-            android:name=".TestActivity"
+            android:name=".EventActivity"
             android:exported="true"
             android:label="界面 B"
             android:parentActivityName=".MainActivity" />

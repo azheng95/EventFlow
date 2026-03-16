@@ -21,7 +21,7 @@ class FlowEventBusConfig private constructor(
      */
     class Builder {
         private var replaySize: Int = 0                            // 默认不保留历史事件
-        private var extraBufferCapacity: Int = 102400              // 默认缓冲区容量
+        private var extraBufferCapacity: Int = 1024                // 默认缓冲区容量
         private var bufferOverflow: BufferOverflow = BufferOverflow.DROP_OLDEST  // 默认溢出策略
 
         /**
@@ -29,9 +29,8 @@ class FlowEventBusConfig private constructor(
          * @param replaySize 重放事件数量
          * @return Builder实例，支持链式调用
          */
-        fun setReplaySize(replaySize: Int): Builder {
+        fun setReplaySize(replaySize: Int): Builder = apply {
             this.replaySize = replaySize
-            return this
         }
 
         /**
@@ -39,9 +38,8 @@ class FlowEventBusConfig private constructor(
          * @param capacity 缓冲区容量
          * @return Builder实例，支持链式调用
          */
-        fun setExtraBufferCapacity(capacity: Int): Builder {
+        fun setExtraBufferCapacity(capacity: Int): Builder = apply {
             this.extraBufferCapacity = capacity
-            return this
         }
 
         /**
@@ -49,9 +47,8 @@ class FlowEventBusConfig private constructor(
          * @param overflow 溢出策略（如DROP_OLDEST, DROP_LATEST, SUSPEND）
          * @return Builder实例，支持链式调用
          */
-        fun setBufferOverflow(overflow: BufferOverflow): Builder {
+        fun setBufferOverflow(overflow: BufferOverflow): Builder = apply {
             this.bufferOverflow = overflow
-            return this
         }
 
         /**
@@ -64,7 +61,6 @@ class FlowEventBusConfig private constructor(
     }
 
     companion object {
-
         /**
          * 默认配置
          * 使用Builder创建的默认配置实例

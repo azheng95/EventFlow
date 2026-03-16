@@ -12,7 +12,9 @@ object FlowEventBus {
     /**
      * 内部可变共享流，用于发布事件
      * MutableSharedFlow允许多个收集器订阅同一个流
+     * 使用 volatile 确保多线程可见性
      */
+    @Volatile
     private lateinit var _eventFlow: MutableSharedFlow<FlowEvent<*>>
 
     /**
@@ -33,23 +35,28 @@ object FlowEventBus {
 
     /**
      * 初始化事件总线
-     * 使用Synchronized确保线程安全
+     * 使用双重检查锁定模式确保线程安全和性能
      * @param config 事件总线配置，默认使用FlowEventBusConfig.DEFAULT
+     * @return 如果是首次初始化返回true，已初始化则返回false
      */
-    @Synchronized
     fun init(config: FlowEventBusConfig = FlowEventBusConfig.DEFAULT): Boolean {
-        if (!initialized.get()) {
-            _eventFlow = MutableSharedFlow(
-                replay = config.replaySize,            // 缓存的事件数量
-                extraBufferCapacity = config.extraBufferCapacity,  // 额外缓冲区容量
-                onBufferOverflow = config.bufferOverflow           // 缓冲区溢出策略
-            )
-            initialized.set(true)
-            return true
+        // 第一次检查（无锁）
+        if (initialized.get()) return false
+
+        synchronized(this) {
+            // 第二次检查（有锁）
+            if (!initialized.get()) {
+                _eventFlow = MutableSharedFlow(
+                    replay = config.replaySize,            // 缓存的事件数量
+                    extraBufferCapacity = config.extraBufferCapacity,  // 额外缓冲区容量
+                    onBufferOverflow = config.bufferOverflow           // 缓冲区溢出策略
+                )
+                initialized.set(true)
+                return true
+            }
         }
         return false
     }
-
 
     /**
      * 确保事件总线已初始化
@@ -70,5 +77,4 @@ object FlowEventBus {
         ensureInitialized()
         _eventFlow.emit(FlowEvent(event, tag))
     }
-
 }
