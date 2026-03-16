@@ -17,6 +17,6 @@ class MyApplication : Application() {
             .setBufferOverflow(BufferOverflow.DROP_OLDEST) // 更改溢出策略
             .build()
 
-        FlowEventBus.init(config)
+//        FlowEventBus.init(config)
     }
 }

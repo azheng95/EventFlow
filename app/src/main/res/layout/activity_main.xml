@@ -1,13 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:app="http://schemas.android.com/apk/res-auto"
-    xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    tools:context=".MainActivity">
+    android:layout_height="match_parent">
 
         <LinearLayout
-            android:id="@+id/main"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="vertical"
@@ -16,135 +12,96 @@
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="事件接收区域"
-                    android:textSize="18sp"
+                    android:text="FlowEventBus 发送示例"
+                    android:textSize="20sp"
                     android:textStyle="bold" />
-
-                <TextView
-                    android:id="@+id/tvEvent"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    android:background="#E3F2FD"
-                    android:padding="12dp"
-                    android:text="显示事件"
-                    android:textStyle="bold" />
-
-                <TextView
-                    android:id="@+id/tvEvent2"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    android:background="#E8F5E9"
-                    android:padding="12dp"
-                    android:text="显示事件 Live"
-                    android:textStyle="bold" />
-
-                <TextView
-                    android:id="@+id/tvEvent3"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    android:background="#FFF3E0"
-                    android:padding="12dp"
-                    android:text="显示标签事件"
-                    android:textStyle="bold" />
-
-                <TextView
-                    android:id="@+id/tvEvent4"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    android:background="#FCE4EC"
-                    android:padding="12dp"
-                    android:text="显示标签事件 Live"
-                    android:textStyle="bold" />
-
-                <View
-                    android:layout_width="match_parent"
-                    android:layout_height="1dp"
-                    android:layout_marginVertical="16dp"
-                    android:background="#BDBDBD" />
 
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="操作按钮"
-                    android:textSize="18sp"
+                    android:layout_marginTop="16dp"
+                    android:text="发送事件"
                     android:textStyle="bold" />
 
-                <LinearLayout
+                <Button
+                    android:id="@+id/btnSendEvent"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    android:orientation="horizontal">
-
-                        <Button
-                            android:id="@+id/btnOpenAct"
-                            android:layout_width="0dp"
-                            android:layout_height="wrap_content"
-                            android:layout_weight="1"
-                            android:text="打开界面B" />
-
-                        <Button
-                            android:id="@+id/btnSendToCurrent"
-                            android:layout_width="0dp"
-                            android:layout_height="wrap_content"
-                            android:layout_marginStart="8dp"
-                            android:layout_weight="1"
-                            android:text="发送给当前" />
-                </LinearLayout>
-
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    android:orientation="horizontal">
-
-                        <Button
-                            android:id="@+id/btnSendLogin"
-                            android:layout_width="0dp"
-                            android:layout_height="wrap_content"
-                            android:layout_weight="1"
-                            android:text="发送登录" />
-
-                        <Button
-                            android:id="@+id/btnSendNetwork"
-                            android:layout_width="0dp"
-                            android:layout_height="wrap_content"
-                            android:layout_marginStart="8dp"
-                            android:layout_weight="1"
-                            android:text="发送网络状态" />
-                </LinearLayout>
-
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    android:orientation="horizontal">
-
-                        <Button
-                            android:id="@+id/btnSendCart"
-                            android:layout_width="0dp"
-                            android:layout_height="wrap_content"
-                            android:layout_weight="1"
-                            android:text="发送购物车" />
-
-                        <Button
-                            android:id="@+id/btnSendTag"
-                            android:layout_width="0dp"
-                            android:layout_height="wrap_content"
-                            android:layout_marginStart="8dp"
-                            android:layout_weight="1"
-                            android:text="发送刷新标签" />
-                </LinearLayout>
+                    android:text="发送 LoginEvent" />
 
                 <Button
-                    android:id="@+id/btnCancelJob"
+                    android:id="@+id/btnSendEventWithTag"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="发送 MessageEvent (带标签)" />
+
+                <Button
+                    android:id="@+id/btnSendEventLifecycle"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="发送 RefreshEvent (生命周期)" />
+
+                <Button
+                    android:id="@+id/btnSendEventSuspend"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="挂起函数发送事件" />
+
+                <Button
+                    android:id="@+id/btnSendMultipleEvents"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="批量发送 5 条消息" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="16dp"
+                    android:text="发送标签"
+                    android:textStyle="bold" />
+
+                <Button
+                    android:id="@+id/btnSendTag"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="发送标签 action_refresh" />
+
+                <Button
+                    android:id="@+id/btnSendTagLifecycle"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="发送标签 action_logout (生命周期)" />
+
+                <Button
+                    android:id="@+id/btnSendTagSuspend"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="挂起函数发送标签" />
+
+                <Button
+                    android:id="@+id/btnGoToSecond"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="16dp"
+                    android:text="跳转到 SecondActivity"
+                    android:backgroundTint="#4CAF50" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="16dp"
+                    android:text="接收日志："
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/tvLog"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="8dp"
-                    android:text="取消事件接收" />
+                    android:background="#F5F5F5"
+                    android:minHeight="200dp"
+                    android:padding="8dp"
+                    android:text="等待事件..." />
 
         </LinearLayout>
 </ScrollView>

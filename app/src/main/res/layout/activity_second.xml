@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="SecondActivity"
+            android:textSize="20sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="发送事件回 MainActivity"
+            android:textStyle="bold" />
+
+        <Button
+            android:id="@+id/btnSendLoginSuccess"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="发送登录成功事件" />
+
+        <Button
+            android:id="@+id/btnSendMessage"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="发送普通消息" />
+
+        <Button
+            android:id="@+id/btnSendVipMessage"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="发送 VIP 消息 (带标签)" />
+
+        <Button
+            android:id="@+id/btnSendRefreshTag"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="发送刷新标签" />
+
+        <Button
+            android:id="@+id/btnSendLocationUpdates"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="批量发送位置更新 (测试 onlyReceiveLatest)" />
+
+        <Button
+            android:id="@+id/btnBackgroundTaskComplete"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="模拟后台任务完成" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="接收日志："
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/tvLog"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:background="#F5F5F5"
+            android:minHeight="200dp"
+            android:padding="8dp"
+            android:text="等待事件..." />
+
+    </LinearLayout>
+</ScrollView>
