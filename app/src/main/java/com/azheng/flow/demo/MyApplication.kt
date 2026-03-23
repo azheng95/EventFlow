@@ -9,14 +9,13 @@ import kotlinx.coroutines.channels.BufferOverflow
 class MyApplication : Application() {
     override fun onCreate() {
         super.onCreate()
-        
-        // 使用自定义配置
-        val config = FlowEventBusConfig.Builder()
-            .setReplaySize(0)
-            .setExtraBufferCapacity(1024) // 设置较小的缓冲区
-            .setBufferOverflow(BufferOverflow.DROP_OLDEST) // 更改溢出策略
-            .build()
-
-//        FlowEventBus.init(config)
+        // 不初始化会使用默认配置
+        FlowEventBus.init(
+            FlowEventBusConfig.Builder()
+                .setReplaySize(0)
+                .setExtraBufferCapacity(2048)
+                .setBufferOverflow(BufferOverflow.SUSPEND)
+                .build()
+        )
     }
 }

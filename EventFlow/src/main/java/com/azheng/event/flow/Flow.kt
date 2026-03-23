@@ -7,6 +7,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
@@ -147,6 +149,7 @@ inline fun <reified T> LifecycleOwner.receiveEvent(
  * @param tags 标签数组
  * @param lifeEvent 生命周期事件
  * @param onlyReceiveLatest 是否只接收最新事件
+ * @param serialProcessing 是否串行处理事件（使用Mutex保证顺序），默认为true（串行处理，保证顺序）
  * @param block 接收到事件后执行函数
  * @return 返回Job对象，可用于手动取消
  */
@@ -157,6 +160,7 @@ internal fun <T> LifecycleOwner.receiveEventLiveImpl(
     tags: Array<out String?>,
     lifeEvent: Lifecycle.Event,
     onlyReceiveLatest: Boolean,
+    serialProcessing: Boolean,
     block: suspend CoroutineScope.(event: T) -> Unit
 ): Job {
     val coroutineScope = FlowScope(this, lifeEvent)
@@ -169,7 +173,7 @@ internal fun <T> LifecycleOwner.receiveEventLiveImpl(
         val liveData = MutableLiveData<T>().apply {
             observe(lifecycleOwner) { event ->
                 // 只有当事件是最新的才处理，避免处理过期事件
-                if (event != null && event == latestEventContainer.get()) {
+                if (event != null && event === latestEventContainer.get()) {
                     coroutineScope.launch { block(event) }
                 }
             }
@@ -190,17 +194,48 @@ internal fun <T> LifecycleOwner.receiveEventLiveImpl(
         val pendingEvents = ConcurrentLinkedQueue<T>()
         // AtomicInteger 计数器用于双重保障，防止极端情况下的事件丢失
         val pendingCount = AtomicInteger(0)
+        // Mutex 用于保证事件处理的顺序性，协程挂起式锁，不阻塞线程（仅在 serialProcessing=true 时使用）
+        val processingMutex = if (serialProcessing) Mutex() else null
 
         // 使用时间戳触发LiveData更新，确保每次都能触发观察者
         val triggerLiveData = MutableLiveData<Long>().apply {
             observe(lifecycleOwner) {
-                // 循环处理直到计数器归零，确保所有事件都被处理
-                while (pendingCount.get() > 0) {
-                    val event = pendingEvents.poll()
-                    if (event != null) {
-                        // 成功取出事件后才减少计数
-                        pendingCount.decrementAndGet()
-                        coroutineScope.launch { block(event) }
+                if (serialProcessing && processingMutex != null) {
+                    // ========== 串行处理模式（默认）：使用 Mutex 保证顺序执行 ==========
+                    coroutineScope.launch {
+                        // 获取锁，保证同一时间只有一个协程在处理事件队列
+                        processingMutex.withLock {
+                            // 循环处理直到队列为空或计数器归零，确保所有事件都被处理
+                            while (pendingCount.get() > 0) {
+                                val event = pendingEvents.poll()
+                                if (event != null) {
+                                    // 成功取出事件后才减少计数
+                                    pendingCount.decrementAndGet()
+                                    // 在锁内顺序执行，保证事件处理顺序
+                                    block(event)
+                                } else {
+                                    // 队列为空但计数器不为零，可能存在竞态条件
+                                    // 退出循环，等待下次 LiveData 触发重新处理
+                                    break
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // ========== 并发处理模式：每个事件独立协程处理，性能更好但不保证顺序 ==========
+                    // 循环处理直到队列为空或计数器归零，确保所有事件都被处理
+                    while (pendingCount.get() > 0) {
+                        val event = pendingEvents.poll()
+                        if (event != null) {
+                            // 成功取出事件后才减少计数
+                            pendingCount.decrementAndGet()
+                            // 每个事件启动独立协程，并发执行
+                            coroutineScope.launch { block(event) }
+                        } else {
+                            // 队列为空但计数器不为零，可能存在竞态条件
+                            // 退出循环，等待下次 LiveData 触发重新处理
+                            break
+                        }
                     }
                 }
             }
@@ -211,10 +246,10 @@ internal fun <T> LifecycleOwner.receiveEventLiveImpl(
                 .filter { bus -> eventClass.isInstance(bus.event) && (tags.isEmpty() || tags.contains(bus.tag)) }
                 .collect { bus ->
                     val event = bus.event as T
-                    // 先将事件加入队列
-                    pendingEvents.offer(event)
-                    // 增加计数器（先增加计数，再触发LiveData，保证顺序）
+                    // 先增加计数器，确保观察者能感知到有待处理事件
                     pendingCount.incrementAndGet()
+                    // 再将事件加入队列
+                    pendingEvents.offer(event)
                     // 使用时间戳确保 LiveData 值变化，触发观察者
                     triggerLiveData.postValue(System.nanoTime())
                 }
@@ -226,14 +261,17 @@ internal fun <T> LifecycleOwner.receiveEventLiveImpl(
  * 使用LiveData将消息延迟到前台接收
  * 确保事件处理在UI可见时进行，避免在后台处理事件
  *
- *
+ * 处理模式说明：
  * - onlyReceiveLatest = true: 只接收最新事件，回到前台只处理最后一个
- * - onlyReceiveLatest = false: 使用队列 + AtomicInteger计数器双重保障，确保所有事件都能被接收，不会丢失
+ * - onlyReceiveLatest = false: 使用队列 + AtomicInteger计数器，确保所有事件都能被接收
+ *   - serialProcessing = true（默认）: 串行处理，使用Mutex互斥锁保证事件按顺序处理
+ *   - serialProcessing = false: 并发处理，性能更好，但不保证处理顺序
  *
  * @param T 要接收的事件类型
  * @param tags 可接受零个或多个标签，如果标签为零个则匹配事件对象即可成功接收，如果为多个则要求至少匹配一个标签才能成功接收到事件
  * @param lifeEvent 生命周期事件，默认为ON_DESTROY
  * @param onlyReceiveLatest 回到前台后是否只接收最后一次的值，默认为false
+ * @param serialProcessing 是否串行处理事件（使用Mutex保证顺序），默认为true（串行处理，保证顺序）
  * @param block 接收到事件后执行函数
  * @return 返回Job对象，可用于手动取消
  */
@@ -241,8 +279,9 @@ inline fun <reified T> LifecycleOwner.receiveEventLive(
     vararg tags: String? = emptyArray(),
     lifeEvent: Lifecycle.Event = Lifecycle.Event.ON_DESTROY,
     onlyReceiveLatest: Boolean = false,
+    serialProcessing: Boolean = true,
     noinline block: suspend CoroutineScope.(event: T) -> Unit
-): Job = receiveEventLiveImpl(T::class.java, tags, lifeEvent, onlyReceiveLatest, block)
+): Job = receiveEventLiveImpl(T::class.java, tags, lifeEvent, onlyReceiveLatest, serialProcessing, block)
 
 /**
  * 接收事件，不绑定生命周期
@@ -303,6 +342,7 @@ fun LifecycleOwner.receiveTag(
  * @param tags 标签数组
  * @param lifeEvent 生命周期事件
  * @param onlyReceiveLatest 是否只接收最新标签
+ * @param serialProcessing 是否串行处理标签（使用Mutex保证顺序），默认为true（串行处理，保证顺序）
  * @param block 接收到标签后执行函数
  * @return 返回Job对象，可用于手动取消
  */
@@ -311,6 +351,7 @@ internal fun LifecycleOwner.receiveTagLiveImpl(
     tags: Array<out String?>,
     lifeEvent: Lifecycle.Event,
     onlyReceiveLatest: Boolean,
+    serialProcessing: Boolean,
     block: suspend CoroutineScope.(tag: String) -> Unit
 ): Job {
     val coroutineScope = FlowScope(this, lifeEvent)
@@ -323,7 +364,7 @@ internal fun LifecycleOwner.receiveTagLiveImpl(
         val liveData = MutableLiveData<String>().apply {
             observe(lifecycleOwner) { tag ->
                 // 只有当标签是最新的才处理，避免处理过期标签
-                if (tag != null && tag == latestTagContainer.get()) {
+                if (tag != null && tag === latestTagContainer.get()) {
                     coroutineScope.launch { block(tag) }
                 }
             }
@@ -348,17 +389,48 @@ internal fun LifecycleOwner.receiveTagLiveImpl(
         val pendingTags = ConcurrentLinkedQueue<String>()
         // AtomicInteger 计数器用于双重保障，防止极端情况下的标签丢失
         val pendingCount = AtomicInteger(0)
+        // Mutex 用于保证标签处理的顺序性，协程挂起式锁，不阻塞线程（仅在 serialProcessing=true 时使用）
+        val processingMutex = if (serialProcessing) Mutex() else null
 
         // 使用时间戳触发LiveData更新，确保每次都能触发观察者
         val triggerLiveData = MutableLiveData<Long>().apply {
             observe(lifecycleOwner) {
-                // 循环处理直到计数器归零，确保所有标签都被处理
-                while (pendingCount.get() > 0) {
-                    val tag = pendingTags.poll()
-                    if (tag != null) {
-                        // 成功取出标签后才减少计数
-                        pendingCount.decrementAndGet()
-                        coroutineScope.launch { block(tag) }
+                if (serialProcessing && processingMutex != null) {
+                    // ========== 串行处理模式（默认）：使用 Mutex 保证顺序执行 ==========
+                    coroutineScope.launch {
+                        // 获取锁，保证同一时间只有一个协程在处理标签队列
+                        processingMutex.withLock {
+                            // 循环处理直到队列为空或计数器归零，确保所有标签都被处理
+                            while (pendingCount.get() > 0) {
+                                val tag = pendingTags.poll()
+                                if (tag != null) {
+                                    // 成功取出标签后才减少计数
+                                    pendingCount.decrementAndGet()
+                                    // 在锁内顺序执行，保证标签处理顺序
+                                    block(tag)
+                                } else {
+                                    // 队列为空但计数器不为零，可能存在竞态条件
+                                    // 退出循环，等待下次 LiveData 触发重新处理
+                                    break
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // ========== 并发处理模式：每个标签独立协程处理，性能更好但不保证顺序 ==========
+                    // 循环处理直到队列为空或计数器归零，确保所有标签都被处理
+                    while (pendingCount.get() > 0) {
+                        val tag = pendingTags.poll()
+                        if (tag != null) {
+                            // 成功取出标签后才减少计数
+                            pendingCount.decrementAndGet()
+                            // 每个标签启动独立协程，并发执行
+                            coroutineScope.launch { block(tag) }
+                        } else {
+                            // 队列为空但计数器不为零，可能存在竞态条件
+                            // 退出循环，等待下次 LiveData 触发重新处理
+                            break
+                        }
                     }
                 }
             }
@@ -373,10 +445,10 @@ internal fun LifecycleOwner.receiveTagLiveImpl(
                 }
                 .collect { bus ->
                     val tag = bus.tag ?: return@collect
-                    // 先将标签加入队列
-                    pendingTags.offer(tag)
-                    // 增加计数器（先增加计数，再触发LiveData，保证顺序）
+                    // 先增加计数器，确保观察者能感知到有待处理标签
                     pendingCount.incrementAndGet()
+                    // 再将标签加入队列
+                    pendingTags.offer(tag)
                     // 使用时间戳确保 LiveData 值变化，触发观察者
                     triggerLiveData.postValue(System.nanoTime())
                 }
@@ -388,13 +460,16 @@ internal fun LifecycleOwner.receiveTagLiveImpl(
  * 使用LiveData将标签消息延迟到前台接收
  * 确保标签处理在UI可见时进行
  *
- * 加强版优化说明：
+ * 处理模式说明：
  * - onlyReceiveLatest = true: 只接收最新标签，回到前台只处理最后一个
- * - onlyReceiveLatest = false: 使用队列 + AtomicInteger计数器双重保障，确保所有标签都能被接收，不会丢失
+ * - onlyReceiveLatest = false: 使用队列 + AtomicInteger计数器，确保所有标签都能被接收
+ *   - serialProcessing = true（默认）: 串行处理，使用Mutex互斥锁保证标签按顺序处理
+ *   - serialProcessing = false: 并发处理，性能更好，但不保证处理顺序
  *
  * @param tags 要监听的标签数组，为空时接收所有标签
  * @param lifeEvent 生命周期事件，默认为ON_DESTROY时停止监听
  * @param onlyReceiveLatest 回到前台后是否只接收最后一次的值，默认为false
+ * @param serialProcessing 是否串行处理标签（使用Mutex保证顺序），默认为true（串行处理，保证顺序）
  * @param block 接收到标签时执行的挂起函数
  * @return 返回可用于取消监听的Job对象
  */
@@ -402,8 +477,9 @@ fun LifecycleOwner.receiveTagLive(
     vararg tags: String?,
     lifeEvent: Lifecycle.Event = Lifecycle.Event.ON_DESTROY,
     onlyReceiveLatest: Boolean = false,
+    serialProcessing: Boolean = true,
     block: suspend CoroutineScope.(tag: String) -> Unit
-): Job = receiveTagLiveImpl(tags, lifeEvent, onlyReceiveLatest, block)
+): Job = receiveTagLiveImpl(tags, lifeEvent, onlyReceiveLatest, serialProcessing, block)
 
 /**
  * 接收标签，不绑定生命周期

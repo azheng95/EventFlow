@@ -3,105 +3,117 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent">
 
-        <LinearLayout
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="FlowEventBus 发送示例"
+            android:textSize="20sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="发送事件"
+            android:textStyle="bold" />
+
+        <Button
+            android:id="@+id/btnBusStress"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:padding="16dp">
+            android:text="压力测试" />
 
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="FlowEventBus 发送示例"
-                    android:textSize="20sp"
-                    android:textStyle="bold" />
+        <Button
+            android:id="@+id/btnMutex"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Mutex" />
 
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="16dp"
-                    android:text="发送事件"
-                    android:textStyle="bold" />
+        <Button
+            android:id="@+id/btnSendEvent"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="发送 LoginEvent" />
 
-                <Button
-                    android:id="@+id/btnSendEvent"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:text="发送 LoginEvent" />
+        <Button
+            android:id="@+id/btnSendEventWithTag"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="发送 MessageEvent (带标签)" />
 
-                <Button
-                    android:id="@+id/btnSendEventWithTag"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:text="发送 MessageEvent (带标签)" />
+        <Button
+            android:id="@+id/btnSendEventLifecycle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="发送 RefreshEvent (生命周期)" />
 
-                <Button
-                    android:id="@+id/btnSendEventLifecycle"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:text="发送 RefreshEvent (生命周期)" />
+        <Button
+            android:id="@+id/btnSendEventSuspend"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="挂起函数发送事件" />
 
-                <Button
-                    android:id="@+id/btnSendEventSuspend"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:text="挂起函数发送事件" />
+        <Button
+            android:id="@+id/btnSendMultipleEvents"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="批量发送 5 条消息" />
 
-                <Button
-                    android:id="@+id/btnSendMultipleEvents"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:text="批量发送 5 条消息" />
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="发送标签"
+            android:textStyle="bold" />
 
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="16dp"
-                    android:text="发送标签"
-                    android:textStyle="bold" />
+        <Button
+            android:id="@+id/btnSendTag"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="发送标签 action_refresh" />
 
-                <Button
-                    android:id="@+id/btnSendTag"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:text="发送标签 action_refresh" />
+        <Button
+            android:id="@+id/btnSendTagLifecycle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="发送标签 action_logout (生命周期)" />
 
-                <Button
-                    android:id="@+id/btnSendTagLifecycle"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:text="发送标签 action_logout (生命周期)" />
+        <Button
+            android:id="@+id/btnSendTagSuspend"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="挂起函数发送标签" />
 
-                <Button
-                    android:id="@+id/btnSendTagSuspend"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:text="挂起函数发送标签" />
+        <Button
+            android:id="@+id/btnGoToSecond"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:backgroundTint="#4CAF50"
+            android:text="跳转到 SecondActivity" />
 
-                <Button
-                    android:id="@+id/btnGoToSecond"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="16dp"
-                    android:text="跳转到 SecondActivity"
-                    android:backgroundTint="#4CAF50" />
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="接收日志："
+            android:textStyle="bold" />
 
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="16dp"
-                    android:text="接收日志："
-                    android:textStyle="bold" />
+        <TextView
+            android:id="@+id/tvLog"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:background="#F5F5F5"
+            android:minHeight="200dp"
+            android:padding="8dp"
+            android:text="等待事件..." />
 
-                <TextView
-                    android:id="@+id/tvLog"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    android:background="#F5F5F5"
-                    android:minHeight="200dp"
-                    android:padding="8dp"
-                    android:text="等待事件..." />
-
-        </LinearLayout>
+    </LinearLayout>
 </ScrollView>

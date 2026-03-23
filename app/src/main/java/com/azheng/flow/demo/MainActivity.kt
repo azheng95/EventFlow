@@ -8,9 +8,11 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.azheng.event.flow.*
 import com.azheng.flow.demo.databinding.ActivityMainBinding
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class MainActivity : AppCompatActivity() {
 
@@ -28,12 +30,37 @@ class MainActivity : AppCompatActivity() {
         setupSendButtons()
         setupReceiveEvents()
     }
+    private val results = mutableListOf<Int>()
 
     /**
      * 设置发送按钮点击事件
      */
     private fun setupSendButtons() {
         // ==================== 发送事件示例 ====================
+        binding.btnBusStress.setOnClickListener {
+            lifecycleScope.launch {
+                FlowEventBusStressTest().runAllTests()
+            }
+        }
+        binding.btnMutex.setOnClickListener {
+            // 快速发送3个事件
+            lifecycleScope.launch {
+                sendEventSuspend(1)
+                sendEventSuspend(2)
+                sendEventSuspend(3)
+            }
+
+        }
+        // 订阅事件
+        receiveEvent<Int> { number ->
+            // 模拟不同的处理时间
+            delay((4 - number) * 100L)  // 数字越小，处理越慢
+            results.add(number)
+            Log.d("FlowEventBusStressTest", "处理完成: $number, 当前结果: $results")
+        }
+
+
+
 
         // 1. 生命周期感知的事件发送（推荐）
         binding.btnSendEvent.setOnClickListener {
