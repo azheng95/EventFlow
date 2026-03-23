@@ -1,20 +1,5 @@
 [![](https://jitpack.io/v/azheng95/EventFlow.svg)](https://jitpack.io/#azheng95/EventFlow)
 
-# FlowEventBus
-
-> 基于 **Kotlin Flow / SharedFlow / Lifecycle / LiveData** 的轻量事件总线实现。  
-> 支持：
->
-> - 生命周期感知发送/接收
-> - 事件 + Tag 双重过滤
-> - 前台可见时再处理事件
-> - 只接收最新值 / 接收全部值
-> - 串行处理 / 并发处理
-> - `BufferOverflow` 策略自定义
-> - **全局默认 Bus + 多个独立 Bus 实例，互不干扰**
-
----
-
 ## 目录
 
 - [功能特性](#功能特性)
