@@ -24,3 +24,21 @@ data class RefreshEvent(
     val dataType: String,
     val forceRefresh: Boolean = false
 )
+
+/**
+ * 聊天消息事件（用于独立 chatBus 示例）
+ */
+data class ChatEvent(
+    val from: String,
+    val message: String,
+    val timestamp: Long = System.currentTimeMillis()
+)
+
+/**
+ * 行情价格事件（用于独立 pricingBus 示例）
+ */
+data class PriceEvent(
+    val symbol: String,
+    val price: Double,
+    val timestamp: Long = System.currentTimeMillis()
+)

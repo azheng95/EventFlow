@@ -17,20 +17,17 @@ import java.util.concurrent.atomic.AtomicReference
  * 事件总线实现
  * 基于Kotlin Flow实现的事件总线
  * 用于在应用程序的不同组件间传递事件，采用发布-订阅模式
+ *
+ * 所有函数均支持可选的 [bus] 参数：
+ * - 不传 bus（默认）：使用全局默认实例 [FlowEventBus.default]
+ * - 传入独立 bus：使用通过 [FlowEventBus.create] 创建的独立实例，与全局及其他实例完全隔离
  */
-
-/**
- * 对外暴露的只读事件流
- * 使用@PublishedApi注解允许内联函数访问此内部属性
- */
-@PublishedApi
-internal val eventFlow = FlowEventBus.eventFlow
 
 /**
  * 内部事件发送函数
  */
-private suspend fun <T> emitEvent(event: T, tag: String?) {
-    FlowEventBus.emitEvent(event, tag)
+private suspend fun <T> emitEvent(event: T, tag: String?, bus: FlowEventBus) {
+    bus.emitEvent(event, tag)
 }
 
 // ==================== 发送事件相关函数 ====================
@@ -42,14 +39,16 @@ private suspend fun <T> emitEvent(event: T, tag: String?) {
  * @param event 要发送的事件对象
  * @param tag 可选的事件标签
  * @param lifeEvent 生命周期事件，默认为ON_DESTROY，表示组件销毁时取消事件
+ * @param bus 事件总线实例，默认使用全局实例，可传入独立实例实现隔离
  * @return 返回Job对象，可用于手动取消
  */
 fun <T> LifecycleOwner.sendEvent(
     event: T,
     tag: String? = null,
-    lifeEvent: Lifecycle.Event = Lifecycle.Event.ON_DESTROY
+    lifeEvent: Lifecycle.Event = Lifecycle.Event.ON_DESTROY,
+    bus: FlowEventBus = FlowEventBus.default
 ): Job = FlowScope(this, lifeEvent).launch {
-    emitEvent(event, tag)
+    emitEvent(event, tag, bus)
 }
 
 /**
@@ -59,14 +58,16 @@ fun <T> LifecycleOwner.sendEvent(
  * @param event 要发送的事件对象
  * @param tag 可选的事件标签
  * @param scope 协程作用域，默认使用FlowScope
+ * @param bus 事件总线实例，默认使用全局实例，可传入独立实例实现隔离
  * @return 返回Job对象，可用于手动取消
  */
 fun <T> sendEvent(
     event: T,
     tag: String? = null,
-    scope: CoroutineScope = FlowScope()
+    scope: CoroutineScope = FlowScope(),
+    bus: FlowEventBus = FlowEventBus.default
 ): Job = scope.launch {
-    emitEvent(event, tag)
+    emitEvent(event, tag, bus)
 }
 
 /**
@@ -75,9 +76,14 @@ fun <T> sendEvent(
  *
  * @param event 要发送的事件对象
  * @param tag 可选的事件标签
+ * @param bus 事件总线实例，默认使用全局实例，可传入独立实例实现隔离
  */
-suspend fun <T> sendEventSuspend(event: T, tag: String? = null) {
-    emitEvent(event, tag)
+suspend fun <T> sendEventSuspend(
+    event: T,
+    tag: String? = null,
+    bus: FlowEventBus = FlowEventBus.default
+) {
+    emitEvent(event, tag, bus)
 }
 
 // ==================== 发送标签相关函数 ====================
@@ -88,31 +94,39 @@ suspend fun <T> sendEventSuspend(event: T, tag: String? = null) {
  *
  * @param tag 要发送的标签
  * @param lifeEvent 生命周期事件，默认为ON_DESTROY
+ * @param bus 事件总线实例，默认使用全局实例，可传入独立实例实现隔离
  * @return 返回Job对象，可用于手动取消
  */
 fun LifecycleOwner.sendTag(
     tag: String?,
-    lifeEvent: Lifecycle.Event = Lifecycle.Event.ON_DESTROY
-): Job = sendEvent(FlowTag, tag, lifeEvent)
+    lifeEvent: Lifecycle.Event = Lifecycle.Event.ON_DESTROY,
+    bus: FlowEventBus = FlowEventBus.default
+): Job = sendEvent(FlowTag, tag, lifeEvent, bus)
 
 /**
  * 非生命周期感知的标签发送函数
  *
  * @param tag 要发送的标签
  * @param scope 协程作用域，默认使用FlowScope
+ * @param bus 事件总线实例，默认使用全局实例，可传入独立实例实现隔离
  * @return 返回Job对象，可用于手动取消
  */
 fun sendTag(
     tag: String?,
-    scope: CoroutineScope = FlowScope()
-): Job = sendEvent(FlowTag, tag, scope)
+    scope: CoroutineScope = FlowScope(),
+    bus: FlowEventBus = FlowEventBus.default
+): Job = sendEvent(FlowTag, tag, scope, bus)
 
 /**
  * 挂起函数版本的标签发送
  *
  * @param tag 要发送的标签
+ * @param bus 事件总线实例，默认使用全局实例，可传入独立实例实现隔离
  */
-suspend fun sendTagSuspend(tag: String?) = sendEventSuspend(FlowTag, tag)
+suspend fun sendTagSuspend(
+    tag: String?,
+    bus: FlowEventBus = FlowEventBus.default
+) = sendEventSuspend(FlowTag, tag, bus)
 
 // ==================== 接收事件相关函数 ====================
 
@@ -123,6 +137,7 @@ suspend fun sendTagSuspend(tag: String?) = sendEventSuspend(FlowTag, tag)
  * @param T 要接收的事件类型
  * @param tags 可接受零个或多个标签, 如果标签为零个则匹配事件对象即可成功接收, 如果为多个则要求至少匹配一个标签才能成功接收到事件
  * @param lifeEvent 生命周期事件，默认为ON_DESTROY
+ * @param bus 事件总线实例，默认使用全局实例，可传入独立实例实现隔离
  * @param block 接收到事件后执行函数
  * @return 返回Job对象，可用于手动取消
  */
@@ -130,13 +145,14 @@ suspend fun sendTagSuspend(tag: String?) = sendEventSuspend(FlowTag, tag)
 inline fun <reified T> LifecycleOwner.receiveEvent(
     vararg tags: String? = emptyArray(),
     lifeEvent: Lifecycle.Event = Lifecycle.Event.ON_DESTROY,
+    bus: FlowEventBus = FlowEventBus.default,
     noinline block: suspend CoroutineScope.(event: T) -> Unit
 ): Job {
     val coroutineScope = FlowScope(this, lifeEvent)
     return coroutineScope.launch {
-        eventFlow
-            .filter { bus -> bus.event is T && (tags.isEmpty() || tags.contains(bus.tag)) }
-            .collect { bus -> block(bus.event as T) }
+        bus.eventFlow
+            .filter { busEvent -> busEvent.event is T && (tags.isEmpty() || tags.contains(busEvent.tag)) }
+            .collect { busEvent -> block(busEvent.event as T) }
     }
 }
 
@@ -150,6 +166,7 @@ inline fun <reified T> LifecycleOwner.receiveEvent(
  * @param lifeEvent 生命周期事件
  * @param onlyReceiveLatest 是否只接收最新事件
  * @param serialProcessing 是否串行处理事件（使用Mutex保证顺序），默认为true（串行处理，保证顺序）
+ * @param bus 事件总线实例
  * @param block 接收到事件后执行函数
  * @return 返回Job对象，可用于手动取消
  */
@@ -161,10 +178,12 @@ internal fun <T> LifecycleOwner.receiveEventLiveImpl(
     lifeEvent: Lifecycle.Event,
     onlyReceiveLatest: Boolean,
     serialProcessing: Boolean,
+    bus: FlowEventBus,
     block: suspend CoroutineScope.(event: T) -> Unit
 ): Job {
     val coroutineScope = FlowScope(this, lifeEvent)
     val lifecycleOwner = this
+    val targetEventFlow = bus.eventFlow
 
     return if (onlyReceiveLatest) {
         // ========== 只接收最新事件的模式 ==========
@@ -180,10 +199,10 @@ internal fun <T> LifecycleOwner.receiveEventLiveImpl(
         }
 
         coroutineScope.launch {
-            eventFlow
-                .filter { bus -> eventClass.isInstance(bus.event) && (tags.isEmpty() || tags.contains(bus.tag)) }
-                .collect { bus ->
-                    val event = bus.event as T
+            targetEventFlow
+                .filter { busEvent -> eventClass.isInstance(busEvent.event) && (tags.isEmpty() || tags.contains(busEvent.tag)) }
+                .collect { busEvent ->
+                    val event = busEvent.event as T
                     latestEventContainer.set(event)
                     liveData.postValue(event)
                 }
@@ -242,10 +261,10 @@ internal fun <T> LifecycleOwner.receiveEventLiveImpl(
         }
 
         coroutineScope.launch {
-            eventFlow
-                .filter { bus -> eventClass.isInstance(bus.event) && (tags.isEmpty() || tags.contains(bus.tag)) }
-                .collect { bus ->
-                    val event = bus.event as T
+            targetEventFlow
+                .filter { busEvent -> eventClass.isInstance(busEvent.event) && (tags.isEmpty() || tags.contains(busEvent.tag)) }
+                .collect { busEvent ->
+                    val event = busEvent.event as T
                     // 先增加计数器，确保观察者能感知到有待处理事件
                     pendingCount.incrementAndGet()
                     // 再将事件加入队列
@@ -272,6 +291,7 @@ internal fun <T> LifecycleOwner.receiveEventLiveImpl(
  * @param lifeEvent 生命周期事件，默认为ON_DESTROY
  * @param onlyReceiveLatest 回到前台后是否只接收最后一次的值，默认为false
  * @param serialProcessing 是否串行处理事件（使用Mutex保证顺序），默认为true（串行处理，保证顺序）
+ * @param bus 事件总线实例，默认使用全局实例，可传入独立实例实现隔离
  * @param block 接收到事件后执行函数
  * @return 返回Job对象，可用于手动取消
  */
@@ -280,8 +300,9 @@ inline fun <reified T> LifecycleOwner.receiveEventLive(
     lifeEvent: Lifecycle.Event = Lifecycle.Event.ON_DESTROY,
     onlyReceiveLatest: Boolean = false,
     serialProcessing: Boolean = true,
+    bus: FlowEventBus = FlowEventBus.default,
     noinline block: suspend CoroutineScope.(event: T) -> Unit
-): Job = receiveEventLiveImpl(T::class.java, tags, lifeEvent, onlyReceiveLatest, serialProcessing, block)
+): Job = receiveEventLiveImpl(T::class.java, tags, lifeEvent, onlyReceiveLatest, serialProcessing, bus, block)
 
 /**
  * 接收事件，不绑定生命周期
@@ -289,19 +310,21 @@ inline fun <reified T> LifecycleOwner.receiveEventLive(
  *
  * @param T 要接收的事件类型
  * @param tags 可接受零个或多个标签, 如果标签为零个则匹配事件对象即可成功接收, 如果为多个则要求至少匹配一个标签才能成功接收到事件
+ * @param bus 事件总线实例，默认使用全局实例，可传入独立实例实现隔离
  * @param block 接收到事件后执行函数
  * @return 返回Job对象，必须手动取消以避免内存泄漏
  */
 @Suppress("UNCHECKED_CAST")
 inline fun <reified T> receiveEventHandler(
     vararg tags: String? = emptyArray(),
+    bus: FlowEventBus = FlowEventBus.default,
     noinline block: suspend CoroutineScope.(event: T) -> Unit
 ): Job {
     val coroutineScope = FlowScope()
     return coroutineScope.launch {
-        eventFlow
-            .filter { bus -> bus.event is T && (tags.isEmpty() || tags.contains(bus.tag)) }
-            .collect { bus -> block(bus.event as T) }
+        bus.eventFlow
+            .filter { busEvent -> busEvent.event is T && (tags.isEmpty() || tags.contains(busEvent.tag)) }
+            .collect { busEvent -> block(busEvent.event as T) }
     }
 }
 
@@ -313,24 +336,26 @@ inline fun <reified T> receiveEventHandler(
  *
  * @param tags 可接受零个或多个标签, 如果标签为零个则匹配所有FlowTag事件, 如果为多个则要求至少匹配一个标签才能成功接收到事件
  * @param lifeEvent 生命周期事件，默认为ON_DESTROY
+ * @param bus 事件总线实例，默认使用全局实例，可传入独立实例实现隔离
  * @param block 接收到事件后执行函数，参数为标签字符串
  * @return 返回Job对象，可用于手动取消
  */
 fun LifecycleOwner.receiveTag(
     vararg tags: String?,
     lifeEvent: Lifecycle.Event = Lifecycle.Event.ON_DESTROY,
+    bus: FlowEventBus = FlowEventBus.default,
     block: suspend CoroutineScope.(tag: String) -> Unit
 ): Job {
     val coroutineScope = FlowScope(this, lifeEvent)
     return coroutineScope.launch {
-        eventFlow
-            .filter { bus ->
-                bus.event === FlowTag &&
-                        !bus.tag.isNullOrBlank() &&
-                        (tags.isEmpty() || tags.contains(bus.tag))
+        bus.eventFlow
+            .filter { busEvent ->
+                busEvent.event === FlowTag &&
+                        !busEvent.tag.isNullOrBlank() &&
+                        (tags.isEmpty() || tags.contains(busEvent.tag))
             }
-            .collect { bus ->
-                bus.tag?.let { block(it) }
+            .collect { busEvent ->
+                busEvent.tag?.let { block(it) }
             }
     }
 }
@@ -343,6 +368,7 @@ fun LifecycleOwner.receiveTag(
  * @param lifeEvent 生命周期事件
  * @param onlyReceiveLatest 是否只接收最新标签
  * @param serialProcessing 是否串行处理标签（使用Mutex保证顺序），默认为true（串行处理，保证顺序）
+ * @param bus 事件总线实例
  * @param block 接收到标签后执行函数
  * @return 返回Job对象，可用于手动取消
  */
@@ -352,10 +378,12 @@ internal fun LifecycleOwner.receiveTagLiveImpl(
     lifeEvent: Lifecycle.Event,
     onlyReceiveLatest: Boolean,
     serialProcessing: Boolean,
+    bus: FlowEventBus,
     block: suspend CoroutineScope.(tag: String) -> Unit
 ): Job {
     val coroutineScope = FlowScope(this, lifeEvent)
     val lifecycleOwner = this
+    val targetEventFlow = bus.eventFlow
 
     return if (onlyReceiveLatest) {
         // ========== 只接收最新标签的模式 ==========
@@ -371,14 +399,14 @@ internal fun LifecycleOwner.receiveTagLiveImpl(
         }
 
         coroutineScope.launch {
-            eventFlow
-                .filter { bus ->
-                    bus.event === FlowTag &&
-                            !bus.tag.isNullOrBlank() &&
-                            (tags.isEmpty() || tags.contains(bus.tag))
+            targetEventFlow
+                .filter { busEvent ->
+                    busEvent.event === FlowTag &&
+                            !busEvent.tag.isNullOrBlank() &&
+                            (tags.isEmpty() || tags.contains(busEvent.tag))
                 }
-                .collect { bus ->
-                    val tag = bus.tag ?: return@collect
+                .collect { busEvent ->
+                    val tag = busEvent.tag ?: return@collect
                     latestTagContainer.set(tag)
                     liveData.postValue(tag)
                 }
@@ -437,14 +465,14 @@ internal fun LifecycleOwner.receiveTagLiveImpl(
         }
 
         coroutineScope.launch {
-            eventFlow
-                .filter { bus ->
-                    bus.event === FlowTag &&
-                            !bus.tag.isNullOrBlank() &&
-                            (tags.isEmpty() || tags.contains(bus.tag))
+            targetEventFlow
+                .filter { busEvent ->
+                    busEvent.event === FlowTag &&
+                            !busEvent.tag.isNullOrBlank() &&
+                            (tags.isEmpty() || tags.contains(busEvent.tag))
                 }
-                .collect { bus ->
-                    val tag = bus.tag ?: return@collect
+                .collect { busEvent ->
+                    val tag = busEvent.tag ?: return@collect
                     // 先增加计数器，确保观察者能感知到有待处理标签
                     pendingCount.incrementAndGet()
                     // 再将标签加入队列
@@ -470,6 +498,7 @@ internal fun LifecycleOwner.receiveTagLiveImpl(
  * @param lifeEvent 生命周期事件，默认为ON_DESTROY时停止监听
  * @param onlyReceiveLatest 回到前台后是否只接收最后一次的值，默认为false
  * @param serialProcessing 是否串行处理标签（使用Mutex保证顺序），默认为true（串行处理，保证顺序）
+ * @param bus 事件总线实例，默认使用全局实例，可传入独立实例实现隔离
  * @param block 接收到标签时执行的挂起函数
  * @return 返回可用于取消监听的Job对象
  */
@@ -478,8 +507,9 @@ fun LifecycleOwner.receiveTagLive(
     lifeEvent: Lifecycle.Event = Lifecycle.Event.ON_DESTROY,
     onlyReceiveLatest: Boolean = false,
     serialProcessing: Boolean = true,
+    bus: FlowEventBus = FlowEventBus.default,
     block: suspend CoroutineScope.(tag: String) -> Unit
-): Job = receiveTagLiveImpl(tags, lifeEvent, onlyReceiveLatest, serialProcessing, block)
+): Job = receiveTagLiveImpl(tags, lifeEvent, onlyReceiveLatest, serialProcessing, bus, block)
 
 /**
  * 接收标签，不绑定生命周期
@@ -487,23 +517,25 @@ fun LifecycleOwner.receiveTagLive(
  * 此事件要求执行[kotlinx.coroutines.cancel]手动注销，否则可能导致内存泄漏
  *
  * @param tags 可接受零个或多个标签, 如果标签为零个则匹配所有FlowTag事件, 如果为多个则要求至少匹配一个标签才能成功接收到事件
+ * @param bus 事件总线实例，默认使用全局实例，可传入独立实例实现隔离
  * @param block 接收到标签后执行函数，参数为标签字符串
  * @return 返回Job对象，必须手动取消以避免内存泄漏
  */
 fun receiveTagHandler(
     vararg tags: String?,
+    bus: FlowEventBus = FlowEventBus.default,
     block: suspend CoroutineScope.(tag: String) -> Unit
 ): Job {
     val coroutineScope = FlowScope()
     return coroutineScope.launch {
-        eventFlow
-            .filter { bus ->
-                bus.event === FlowTag &&
-                        !bus.tag.isNullOrBlank() &&
-                        (tags.isEmpty() || tags.contains(bus.tag))
+        bus.eventFlow
+            .filter { busEvent ->
+                busEvent.event === FlowTag &&
+                        !busEvent.tag.isNullOrBlank() &&
+                        (tags.isEmpty() || tags.contains(busEvent.tag))
             }
-            .collect { bus ->
-                bus.tag?.let { block(it) }
+            .collect { busEvent ->
+                busEvent.tag?.let { block(it) }
             }
     }
 }

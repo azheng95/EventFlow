@@ -22,6 +22,9 @@ class MainActivity : AppCompatActivity() {
     // 保存 receiveEventHandler 返回的 Job，用于手动取消
     private var handlerJob: Job? = null
 
+    // 保存独立 Bus 的 receiveEventHandler Job，用于手动取消
+    private var chatHandlerJob: Job? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
@@ -127,7 +130,63 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // 9. 跳转到 SecondActivity
+        // ==================== 独立Bus发送示例 ====================
+
+        // 9. 发送聊天消息到 chatBus（仅 chatBus 的订阅者能收到）
+        binding.btnSendChatBus.setOnClickListener {
+            sendEvent(
+                event = ChatEvent("张三", "你好，这是 chatBus 消息"),
+                bus = AppBus.chatBus
+            )
+            showToast("已发送 ChatEvent 到 chatBus")
+        }
+
+        // 10. 发送同类型 ChatEvent 到全局 Bus（验证隔离：chatBus 订阅者收不到）
+        binding.btnSendChatGlobal.setOnClickListener {
+            sendEvent(ChatEvent("系统", "这是全局 Bus 的 ChatEvent"))
+            showToast("已发送 ChatEvent 到全局 Bus")
+        }
+
+        // 11. 发送行情到 pricingBus
+        binding.btnSendPriceBus.setOnClickListener {
+            lifecycleScope.launch {
+                // 模拟快速行情推送，因为 pricingBus 用 DROP_OLDEST，旧的会被丢弃
+                repeat(10) { index ->
+                    val price = 100.0 + index * 0.5
+                    sendEventSuspend(
+                        event = PriceEvent("AAPL", price),
+                        bus = AppBus.pricingBus
+                    )
+                    delay(50)
+                }
+                showToast("已发送 10 条行情到 pricingBus")
+            }
+        }
+
+        // 12. 发送标签到 chatBus（验证标签也支持独立 Bus）
+        binding.btnSendTagChatBus.setOnClickListener {
+            sendTag("chat_typing", bus = AppBus.chatBus)
+            showToast("已发送标签 chat_typing 到 chatBus")
+        }
+
+        // 13. 独立 Bus 隔离对比测试：同时向三个 Bus 发送，验证互不干扰
+        binding.btnIsolationTest.setOnClickListener {
+            lifecycleScope.launch {
+                // 同时向全局、chatBus、pricingBus 发送不同内容的 MessageEvent
+                sendEventSuspend(MessageEvent("全局Bus的消息"))
+                sendEventSuspend(
+                    event = MessageEvent("chatBus的消息"),
+                    bus = AppBus.chatBus
+                )
+                sendEventSuspend(
+                    event = MessageEvent("pricingBus的消息"),
+                    bus = AppBus.pricingBus
+                )
+                showToast("已向三个Bus各发送一条 MessageEvent，查看日志验证隔离")
+            }
+        }
+
+        // 14. 跳转到 SecondActivity
         binding.btnGoToSecond.setOnClickListener {
             startActivity(Intent(this, SecondActivity::class.java))
         }
@@ -195,6 +254,51 @@ class MainActivity : AppCompatActivity() {
         handlerJob = receiveEventHandler<MessageEvent> { event ->
             Log.d(TAG, "Handler 收到 MessageEvent: ${event.content}")
         }
+
+        // ==================== 独立Bus接收示例 ====================
+
+        // 9. 接收 chatBus 上的 ChatEvent（全局 Bus 的 ChatEvent 不会触发此回调）
+        receiveEvent<ChatEvent>(bus = AppBus.chatBus) { event ->
+            Log.d(TAG, "【chatBus】收到 ChatEvent: from=${event.from}, msg=${event.message}")
+            updateLog("【chatBus】聊天: ${event.from} 说: ${event.message}")
+        }
+
+        // 10. 接收全局 Bus 上的 ChatEvent（chatBus 的 ChatEvent 不会触发此回调）
+        receiveEvent<ChatEvent> { event ->
+            Log.d(TAG, "【全局Bus】收到 ChatEvent: from=${event.from}, msg=${event.message}")
+            updateLog("【全局Bus】聊天: ${event.from} 说: ${event.message}")
+        }
+
+        // 11. 接收 pricingBus 上的 PriceEvent（使用 receiveEventLive，只关心最新行情）
+        receiveEventLive<PriceEvent>(
+            onlyReceiveLatest = true,  // 只接收最新行情
+            bus = AppBus.pricingBus
+        ) { event ->
+            Log.d(TAG, "【pricingBus】最新行情: ${event.symbol} = ${event.price}")
+            updateLog("【pricingBus】最新行情: ${event.symbol} = $${event.price}")
+        }
+
+        // 12. 接收 chatBus 上的标签事件
+        receiveTag("chat_typing", bus = AppBus.chatBus) { tag ->
+            Log.d(TAG, "【chatBus】收到标签: $tag")
+            updateLog("【chatBus】标签: $tag")
+        }
+
+        // 13. 隔离验证：在全局 Bus 上接收 MessageEvent（chatBus/pricingBus 的 MessageEvent 不会出现在这里）
+        receiveEvent<MessageEvent>(bus = AppBus.chatBus) { event ->
+            Log.d(TAG, "【chatBus】收到 MessageEvent: ${event.content}")
+            updateLog("【chatBus隔离验证】消息: ${event.content}")
+        }
+
+        receiveEvent<MessageEvent>(bus = AppBus.pricingBus) { event ->
+            Log.d(TAG, "【pricingBus】收到 MessageEvent: ${event.content}")
+            updateLog("【pricingBus隔离验证】消息: ${event.content}")
+        }
+
+        // 14. 不绑定生命周期的独立 Bus 事件接收（需要手动取消！）
+        chatHandlerJob = receiveEventHandler<ChatEvent>(bus = AppBus.chatBus) { event ->
+            Log.d(TAG, "【chatBus Handler】收到: ${event.from} - ${event.message}")
+        }
     }
 
     private fun updateLog(message: String) {
@@ -212,5 +316,6 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
         // 重要：手动取消不绑定生命周期的 Job，避免内存泄漏
         handlerJob?.cancel()
+        chatHandlerJob?.cancel()
     }
 }

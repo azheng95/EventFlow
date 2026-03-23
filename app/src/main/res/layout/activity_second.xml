@@ -59,6 +59,60 @@
             android:layout_height="wrap_content"
             android:text="模拟后台任务完成" />
 
+        <!-- ==================== 独立Bus示例 ==================== -->
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="独立Bus示例（互不影响）"
+            android:textColor="#E65100"
+            android:textStyle="bold" />
+
+        <Button
+            android:id="@+id/btnSendChatBus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:backgroundTint="#FF9800"
+            android:text="发送 ChatEvent 到 chatBus" />
+
+        <Button
+            android:id="@+id/btnSendPriceBus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:backgroundTint="#2196F3"
+            android:text="发送行情到 pricingBus" />
+
+        <Button
+            android:id="@+id/btnSendChatSuspend"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:backgroundTint="#FF9800"
+            android:text="挂起函数发送到 chatBus" />
+
+        <Button
+            android:id="@+id/btnSendTagChatBus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:backgroundTint="#FF9800"
+            android:text="发送标签到 chatBus" />
+
+        <Button
+            android:id="@+id/btnSendPriceBatch"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:backgroundTint="#2196F3"
+            android:text="批量发送 20 条行情到 pricingBus" />
+
+        <Button
+            android:id="@+id/btnIsolationTest"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:backgroundTint="#F44336"
+            android:text="隔离对比测试（全局Bus vs chatBus）" />
+
+        <!-- ==================== 日志 ==================== -->
+
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
