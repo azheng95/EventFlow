@@ -16,24 +16,45 @@
             android:textSize="20sp"
             android:textStyle="bold" />
 
+        <!-- ==================== 测试/调试 ==================== -->
+
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="16dp"
-            android:text="发送事件"
+            android:text="测试/调试"
+            android:textColor="#9C27B0"
             android:textStyle="bold" />
 
         <Button
             android:id="@+id/btnBusStress"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:backgroundTint="#9C27B0"
             android:text="压力测试" />
 
         <Button
             android:id="@+id/btnMutex"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Mutex" />
+            android:backgroundTint="#9C27B0"
+            android:text="串行处理验证 (发送 1,2,3)" />
+
+        <Button
+            android:id="@+id/btnClearLog"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:backgroundTint="#757575"
+            android:text="清空日志" />
+
+        <!-- ==================== 发送事件 ==================== -->
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="发送事件"
+            android:textStyle="bold" />
 
         <Button
             android:id="@+id/btnSendEvent"
@@ -65,6 +86,15 @@
             android:layout_height="wrap_content"
             android:text="批量发送 5 条消息" />
 
+        <Button
+            android:id="@+id/btnSendCustomScope"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:backgroundTint="#00BCD4"
+            android:text="自定义 CoroutineScope 发送 (IO线程)" />
+
+        <!-- ==================== 发送标签 ==================== -->
+
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
@@ -89,6 +119,30 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:text="挂起函数发送标签" />
+
+        <Button
+            android:id="@+id/btnSendMultipleTags"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:backgroundTint="#00BCD4"
+            android:text="快速发送 5 个状态标签 (测试 onlyReceiveLatest)" />
+
+        <!-- ==================== 串行/并行处理对比 ==================== -->
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="串行/并行处理对比 (serialProcessing)"
+            android:textColor="#00695C"
+            android:textStyle="bold" />
+
+        <Button
+            android:id="@+id/btnSendTaskBatch"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:backgroundTint="#009688"
+            android:text="发送 5 个 TaskEvent (观察串行/并行日志)" />
 
         <!-- ==================== 独立Bus示例 ==================== -->
 
@@ -144,6 +198,8 @@
             android:layout_marginTop="16dp"
             android:backgroundTint="#4CAF50"
             android:text="跳转到 SecondActivity" />
+
+        <!-- ==================== 日志 ==================== -->
 
         <TextView
             android:layout_width="wrap_content"

@@ -16,6 +16,8 @@
             android:textSize="20sp"
             android:textStyle="bold" />
 
+        <!-- ==================== 全局 Bus 发送 ==================== -->
+
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
@@ -58,6 +60,44 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:text="模拟后台任务完成" />
+
+        <!-- ==================== 新增示例 ==================== -->
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="新增示例"
+            android:textColor="#00695C"
+            android:textStyle="bold" />
+
+        <Button
+            android:id="@+id/btnSendTaskBatch"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:backgroundTint="#009688"
+            android:text="发送 5 个 TaskEvent (串行/并行对比)" />
+
+        <Button
+            android:id="@+id/btnSendMultipleTags"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:backgroundTint="#00BCD4"
+            android:text="快速发送 5 个状态标签 (测试 onlyReceiveLatest)" />
+
+        <Button
+            android:id="@+id/btnSendTagPricingBus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:backgroundTint="#2196F3"
+            android:text="发送标签到 pricingBus" />
+
+        <Button
+            android:id="@+id/btnClearLog"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:backgroundTint="#757575"
+            android:text="清空日志" />
 
         <!-- ==================== 独立Bus示例 ==================== -->
 

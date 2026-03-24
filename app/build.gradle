@@ -48,6 +48,6 @@ dependencies {
     androidTestImplementation libs.androidx.espresso.core
 
     implementation project(':EventFlow')
-
+    implementation "androidx.lifecycle:lifecycle-runtime-ktx:2.10.0"
 
 }

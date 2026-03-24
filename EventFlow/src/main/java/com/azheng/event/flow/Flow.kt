@@ -2,17 +2,12 @@ package com.azheng.event.flow
 
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
-import androidx.lifecycle.MutableLiveData
+import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
-import java.util.concurrent.ConcurrentLinkedQueue
-import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.atomic.AtomicLong
-import java.util.concurrent.atomic.AtomicReference
 
 /**
  * 事件总线实现
@@ -161,12 +156,19 @@ inline fun <reified T> LifecycleOwner.receiveEvent(
  * 内部实现函数 - receiveEventLive 的非内联实现
  * 将复杂逻辑移到此函数中，避免内联时的编译器错误
  *
+ * 使用 Channel + repeatOnLifecycle 替代 LiveData + Queue 方案：
+ * - Channel 天然支持 FIFO 保序、背压处理，消除了 LiveData.postValue 合并导致的事件丢失风险
+ * - repeatOnLifecycle 是 Google 官方推荐的生命周期感知 Flow 收集方式
+ * - 生产者（collect SharedFlow → Channel）始终活跃，不受前后台切换影响
+ * - 消费者（for 循环从 Channel 取数据）只在前台（STARTED+）运行
+ * - Channel 是破坏性读取（消费即移除），回到前台不会重复消费已处理的事件
+ *
  * @param T 要接收的事件类型
  * @param eventClass 事件类型的Class对象，用于运行时类型检查
  * @param tags 标签数组
  * @param lifeEvent 生命周期事件
  * @param onlyReceiveLatest 是否只接收最新事件
- * @param serialProcessing 是否串行处理事件（使用Mutex保证顺序），默认为true（串行处理，保证顺序）
+ * @param serialProcessing 是否串行处理事件，默认为true（串行处理，保证顺序）
  * @param bus 事件总线实例
  * @param block 接收到事件后执行函数
  * @return 返回Job对象，可用于手动取消
@@ -188,120 +190,105 @@ internal fun <T> LifecycleOwner.receiveEventLiveImpl(
 
     return if (onlyReceiveLatest) {
         // ========== 只接收最新事件的模式 ==========
-        // 使用 AtomicLong 生成单调递增的版本号，配合 Versioned 包装类
-        // 避免直接对事件对象使用 === 引用比较的隐患：
-        // - 基本类型（Int、Long 等）经过装箱后引用行为不可预测
-        // - 字符串字面量被 JVM intern，不同位置的相同字面量 === 为 true
-        // - data class 的 copy() 或解构重建会产生不同引用
-        val versionCounter = AtomicLong(0)
-        // 使用 AtomicReference 保存最新的 Versioned 包装对象，确保线程安全
-        val latestVersioned = AtomicReference<Versioned<T>?>(null)
-        val liveData = MutableLiveData<Versioned<T>>().apply {
-            observe(lifecycleOwner) { versioned ->
-                // 通过版本号（Long 值比较）判断是否为最新事件
-                // 语义清晰且不依赖 JVM 引用相等的实现细节
-                if (versioned != null && versioned.version == latestVersioned.get()?.version) {
-                    coroutineScope.launch { block(versioned.value) }
-                }
-            }
-        }
+        // Channel.CONFLATED：缓冲区大小为1，新值自动覆盖旧值
+        // 语义完美匹配 onlyReceiveLatest 需求：
+        // - 前台活跃时：事件实时消费，不存在覆盖
+        // - 后台期间：多个事件到来时只保留最后一个
+        // - 回到前台时：只处理最后一个事件
+        // 无需手动版本管理（Versioned）或引用比较（===）
+        val channel = Channel<T>(Channel.CONFLATED)
 
         coroutineScope.launch {
-            targetEventFlow
-                .filter { busEvent -> eventClass.isInstance(busEvent.event) && (tags.isEmpty() || tags.contains(busEvent.tag)) }
-                .collect { busEvent ->
-                    val event = busEvent.event as T
-                    // 创建带版本号的包装对象，版本号单调递增保证唯一性
-                    val versioned = Versioned(event, versionCounter.incrementAndGet())
-                    // 先更新最新版本引用，再通过 LiveData 通知观察者
-                    latestVersioned.set(versioned)
-                    liveData.postValue(versioned)
+            // 生产者：持续收集 SharedFlow 中的事件，放入 Channel
+            // 运行在 repeatOnLifecycle 外部，不受前后台切换影响
+            // 对 SharedFlow 来说是"快消费者"（trySend 非阻塞，纳秒级），不影响 SharedFlow 的缓冲策略
+            launch {
+                targetEventFlow
+                    .filter { busEvent ->
+                        eventClass.isInstance(busEvent.event) &&
+                                (tags.isEmpty() || tags.contains(busEvent.tag))
+                    }
+                    .collect { busEvent ->
+                        // trySend 用于 CONFLATED Channel，非阻塞，新值覆盖旧值
+                        channel.trySend(busEvent.event as T)
+                    }
+            }
+
+            // 消费者：只在前台（STARTED 及以上状态）消费事件
+            // repeatOnLifecycle 行为：
+            // - 进入 STARTED → 启动 block（for 循环开始消费）
+            // - 降到 STOPPED → 取消 block（for 循环中断）
+            // - 再次 STARTED → 重启 block（for 循环重新启动）
+            // Channel 是破坏性读取，已消费的事件不会因重启而重复消费
+            lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                for (event in channel) {
+                    block(event)
                 }
+            }
         }
     } else {
-        // ========== 接收所有事件的模式 - 队列 + 计数器双重保障 ==========
-        // ConcurrentLinkedQueue 是线程安全的无界队列
-        val pendingEvents = ConcurrentLinkedQueue<T>()
-        // AtomicInteger 计数器用于双重保障，防止极端情况下的事件丢失
-        val pendingCount = AtomicInteger(0)
-        // Mutex 用于保证事件处理的顺序性，协程挂起式锁，不阻塞线程（仅在 serialProcessing=true 时使用）
-        val processingMutex = if (serialProcessing) Mutex() else null
+        // ========== 接收所有事件的模式 ==========
+        // Channel.UNLIMITED：无界缓冲，保证不丢任何事件
+        // 相比原 LiveData + ConcurrentLinkedQueue + AtomicInteger + Mutex 方案：
+        // - 消除了 LiveData.postValue 合并导致的触发丢失风险
+        // - 消除了 pendingCount 与 queue 之间的竞态条件
+        // - Channel 天然 FIFO 保序，串行模式下无需 Mutex
+        // - 一个 Channel 替代四个同步原语，代码更简洁可靠
+        val channel = Channel<T>(Channel.UNLIMITED)
 
-        // 使用时间戳触发LiveData更新，确保每次都能触发观察者
-        val triggerLiveData = MutableLiveData<Long>().apply {
-            observe(lifecycleOwner) {
-                if (serialProcessing && processingMutex != null) {
-                    // ========== 串行处理模式（默认）：使用 Mutex 保证顺序执行 ==========
-                    coroutineScope.launch {
-                        // 获取锁，保证同一时间只有一个协程在处理事件队列
-                        processingMutex.withLock {
-                            // 循环处理直到队列为空或计数器归零，确保所有事件都被处理
-                            while (pendingCount.get() > 0) {
-                                val event = pendingEvents.poll()
-                                if (event != null) {
-                                    // 成功取出事件后才减少计数
-                                    pendingCount.decrementAndGet()
-                                    // 在锁内顺序执行，保证事件处理顺序
-                                    block(event)
-                                } else {
-                                    // 队列为空但计数器不为零，可能存在竞态条件
-                                    // 退出循环，等待下次 LiveData 触发重新处理
-                                    break
-                                }
-                            }
-                        }
+        coroutineScope.launch {
+            // 生产者：持续收集 SharedFlow 中的事件，放入 Channel
+            // 运行在 repeatOnLifecycle 外部，不受前后台切换影响
+            // Channel.UNLIMITED 的 send 不会挂起，对 SharedFlow 来说是"快消费者"
+            launch {
+                targetEventFlow
+                    .filter { busEvent ->
+                        eventClass.isInstance(busEvent.event) &&
+                                (tags.isEmpty() || tags.contains(busEvent.tag))
                     }
-                } else {
-                    // ========== 并发处理模式：每个事件独立协程处理，性能更好但不保证顺序 ==========
-                    // 循环处理直到队列为空或计数器归零，确保所有事件都被处理
-                    while (pendingCount.get() > 0) {
-                        val event = pendingEvents.poll()
-                        if (event != null) {
-                            // 成功取出事件后才减少计数
-                            pendingCount.decrementAndGet()
-                            // 每个事件启动独立协程，并发执行
-                            coroutineScope.launch { block(event) }
-                        } else {
-                            // 队列为空但计数器不为零，可能存在竞态条件
-                            // 退出循环，等待下次 LiveData 触发重新处理
-                            break
-                        }
+                    .collect { busEvent ->
+                        channel.send(busEvent.event as T)
+                    }
+            }
+
+            // 消费者：只在前台（STARTED 及以上状态）消费事件
+            // 后台期间事件缓存在 Channel 中，回到前台后按 FIFO 顺序逐个处理
+            lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                for (event in channel) {
+                    if (serialProcessing) {
+                        // 串行处理模式（默认）：for 循环天然串行，保证事件按顺序处理
+                        // 无需 Mutex，Channel 的 FIFO 语义已保证顺序
+                        block(event)
+                    } else {
+                        // 并发处理模式：每个事件启动独立协程，性能更好但不保证处理顺序
+                        launch { block(event) }
                     }
                 }
             }
-        }
-
-        coroutineScope.launch {
-            targetEventFlow
-                .filter { busEvent -> eventClass.isInstance(busEvent.event) && (tags.isEmpty() || tags.contains(busEvent.tag)) }
-                .collect { busEvent ->
-                    val event = busEvent.event as T
-                    // 先增加计数器，确保观察者能感知到有待处理事件
-                    pendingCount.incrementAndGet()
-                    // 再将事件加入队列
-                    pendingEvents.offer(event)
-                    // 使用时间戳确保 LiveData 值变化，触发观察者
-                    triggerLiveData.postValue(System.nanoTime())
-                }
         }
     }
 }
 
 /**
- * 使用LiveData将消息延迟到前台接收
+ * 使用 Channel + repeatOnLifecycle 将消息延迟到前台接收
  * 确保事件处理在UI可见时进行，避免在后台处理事件
  *
+ * 实现原理：
+ * - 生产者持续收集 SharedFlow 事件并放入 Channel，不受前后台切换影响
+ * - 消费者通过 repeatOnLifecycle 只在前台（STARTED+）从 Channel 取数据处理
+ * - Channel 是破坏性读取（消费即移除），不会因前后台切换导致重复消费
+ *
  * 处理模式说明：
- * - onlyReceiveLatest = true: 只接收最新事件，回到前台只处理最后一个
- * - onlyReceiveLatest = false: 使用队列 + AtomicInteger计数器，确保所有事件都能被接收
- *   - serialProcessing = true（默认）: 串行处理，使用Mutex互斥锁保证事件按顺序处理
- *   - serialProcessing = false: 并发处理，性能更好，但不保证处理顺序
+ * - onlyReceiveLatest = true: 使用 Channel.CONFLATED，只保留最新事件，回到前台只处理最后一个
+ * - onlyReceiveLatest = false: 使用 Channel.UNLIMITED，无界缓冲，保证所有事件都能被接收
+ *   - serialProcessing = true（默认）: for 循环天然串行，保证事件按顺序处理
+ *   - serialProcessing = false: 每个事件启动独立协程，并发处理，性能更好但不保证顺序
  *
  * @param T 要接收的事件类型
  * @param tags 可接受零个或多个标签，如果标签为零个则匹配事件对象即可成功接收，如果为多个则要求至少匹配一个标签才能成功接收到事件
  * @param lifeEvent 生命周期事件，默认为ON_DESTROY
  * @param onlyReceiveLatest 回到前台后是否只接收最后一次的值，默认为false
- * @param serialProcessing 是否串行处理事件（使用Mutex保证顺序），默认为true（串行处理，保证顺序）
+ * @param serialProcessing 是否串行处理事件（for循环天然保证顺序），默认为true（串行处理，保证顺序）
  * @param bus 事件总线实例，默认使用全局实例，可传入独立实例实现隔离
  * @param block 接收到事件后执行函数
  * @return 返回Job对象，可用于手动取消
@@ -375,10 +362,17 @@ fun LifecycleOwner.receiveTag(
  * 内部实现函数 - receiveTagLive 的非内联实现
  * 将复杂逻辑移到此函数中，避免内联时的编译器错误
  *
+ * 使用 Channel + repeatOnLifecycle 替代 LiveData + Queue 方案：
+ * - Channel 天然支持 FIFO 保序、背压处理，消除了 LiveData.postValue 合并导致的标签丢失风险
+ * - repeatOnLifecycle 是 Google 官方推荐的生命周期感知 Flow 收集方式
+ * - 生产者（collect SharedFlow → Channel）始终活跃，不受前后台切换影响
+ * - 消费者（for 循环从 Channel 取数据）只在前台（STARTED+）运行
+ * - Channel 是破坏性读取（消费即移除），回到前台不会重复消费已处理的标签
+ *
  * @param tags 标签数组
  * @param lifeEvent 生命周期事件
  * @param onlyReceiveLatest 是否只接收最新标签
- * @param serialProcessing 是否串行处理标签（使用Mutex保证顺序），默认为true（串行处理，保证顺序）
+ * @param serialProcessing 是否串行处理标签，默认为true（串行处理，保证顺序）
  * @param bus 事件总线实例
  * @param block 接收到标签后执行函数
  * @return 返回Job对象，可用于手动取消
@@ -398,126 +392,108 @@ internal fun LifecycleOwner.receiveTagLiveImpl(
 
     return if (onlyReceiveLatest) {
         // ========== 只接收最新标签的模式 ==========
-        // 使用 AtomicLong 生成单调递增的版本号，配合 Versioned 包装类
-        // 避免直接对标签字符串使用 === 引用比较的隐患：
-        // - 字符串字面量被 JVM intern，不同来源的相同字符串 === 行为不可预测
-        // - 动态构建的字符串（如 "tag_$id"）每次都是不同引用
-        val versionCounter = AtomicLong(0)
-        // 使用 AtomicReference 保存最新的 Versioned 包装对象，确保线程安全
-        val latestVersioned = AtomicReference<Versioned<String>?>(null)
-        val liveData = MutableLiveData<Versioned<String>>().apply {
-            observe(lifecycleOwner) { versioned ->
-                // 通过版本号（Long 值比较）判断是否为最新标签
-                // 语义清晰且不依赖 JVM 引用相等的实现细节
-                if (versioned != null && versioned.version == latestVersioned.get()?.version) {
-                    coroutineScope.launch { block(versioned.value) }
-                }
-            }
-        }
+        // Channel.CONFLATED：缓冲区大小为1，新值自动覆盖旧值
+        // 语义完美匹配 onlyReceiveLatest 需求：
+        // - 前台活跃时：标签实时消费，不存在覆盖
+        // - 后台期间：多个标签到来时只保留最后一个
+        // - 回到前台时：只处理最后一个标签
+        // 无需手动版本管理（Versioned）或引用比较（===）
+        val channel = Channel<String>(Channel.CONFLATED)
 
         coroutineScope.launch {
-            targetEventFlow
-                .filter { busEvent ->
-                    busEvent.event === FlowTag &&
-                            !busEvent.tag.isNullOrBlank() &&
-                            (tags.isEmpty() || tags.contains(busEvent.tag))
+            // 生产者：持续收集 SharedFlow 中的标签事件，放入 Channel
+            // 运行在 repeatOnLifecycle 外部，不受前后台切换影响
+            // 对 SharedFlow 来说是"快消费者"（trySend 非阻塞，纳秒级），不影响 SharedFlow 的缓冲策略
+            launch {
+                targetEventFlow
+                    .filter { busEvent ->
+                        busEvent.event === FlowTag &&
+                                !busEvent.tag.isNullOrBlank() &&
+                                (tags.isEmpty() || tags.contains(busEvent.tag))
+                    }
+                    .collect { busEvent ->
+                        busEvent.tag?.let {
+                            // trySend 用于 CONFLATED Channel，非阻塞，新值覆盖旧值
+                            channel.trySend(it)
+                        }
+                    }
+            }
+
+            // 消费者：只在前台（STARTED 及以上状态）消费标签
+            // repeatOnLifecycle 行为：
+            // - 进入 STARTED → 启动 block（for 循环开始消费）
+            // - 降到 STOPPED → 取消 block（for 循环中断）
+            // - 再次 STARTED → 重启 block（for 循环重新启动）
+            // Channel 是破坏性读取，已消费的标签不会因重启而重复消费
+            lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                for (tag in channel) {
+                    block(tag)
                 }
-                .collect { busEvent ->
-                    val tag = busEvent.tag ?: return@collect
-                    // 创建带版本号的包装对象，版本号单调递增保证唯一性
-                    val versioned = Versioned(tag, versionCounter.incrementAndGet())
-                    // 先更新最新版本引用，再通过 LiveData 通知观察者
-                    latestVersioned.set(versioned)
-                    liveData.postValue(versioned)
-                }
+            }
         }
     } else {
-        // ========== 接收所有标签的模式 - 队列 + 计数器双重保障 ==========
-        // ConcurrentLinkedQueue 是线程安全的无界队列
-        val pendingTags = ConcurrentLinkedQueue<String>()
-        // AtomicInteger 计数器用于双重保障，防止极端情况下的标签丢失
-        val pendingCount = AtomicInteger(0)
-        // Mutex 用于保证标签处理的顺序性，协程挂起式锁，不阻塞线程（仅在 serialProcessing=true 时使用）
-        val processingMutex = if (serialProcessing) Mutex() else null
+        // ========== 接收所有标签的模式 ==========
+        // Channel.UNLIMITED：无界缓冲，保证不丢任何标签
+        // 相比原 LiveData + ConcurrentLinkedQueue + AtomicInteger + Mutex 方案：
+        // - 消除了 LiveData.postValue 合并导致的触发丢失风险
+        // - 消除了 pendingCount 与 queue 之间的竞态条件
+        // - Channel 天然 FIFO 保序，串行模式下无需 Mutex
+        // - 一个 Channel 替代四个同步原语，代码更简洁可靠
+        val channel = Channel<String>(Channel.UNLIMITED)
 
-        // 使用时间戳触发LiveData更新，确保每次都能触发观察者
-        val triggerLiveData = MutableLiveData<Long>().apply {
-            observe(lifecycleOwner) {
-                if (serialProcessing && processingMutex != null) {
-                    // ========== 串行处理模式（默认）：使用 Mutex 保证顺序执行 ==========
-                    coroutineScope.launch {
-                        // 获取锁，保证同一时间只有一个协程在处理标签队列
-                        processingMutex.withLock {
-                            // 循环处理直到队列为空或计数器归零，确保所有标签都被处理
-                            while (pendingCount.get() > 0) {
-                                val tag = pendingTags.poll()
-                                if (tag != null) {
-                                    // 成功取出标签后才减少计数
-                                    pendingCount.decrementAndGet()
-                                    // 在锁内顺序执行，保证标签处理顺序
-                                    block(tag)
-                                } else {
-                                    // 队列为空但计数器不为零，可能存在竞态条件
-                                    // 退出循环，等待下次 LiveData 触发重新处理
-                                    break
-                                }
-                            }
-                        }
+        coroutineScope.launch {
+            // 生产者：持续收集 SharedFlow 中的标签事件，放入 Channel
+            // 运行在 repeatOnLifecycle 外部，不受前后台切换影响
+            // Channel.UNLIMITED 的 send 不会挂起，对 SharedFlow 来说是"快消费者"
+            launch {
+                targetEventFlow
+                    .filter { busEvent ->
+                        busEvent.event === FlowTag &&
+                                !busEvent.tag.isNullOrBlank() &&
+                                (tags.isEmpty() || tags.contains(busEvent.tag))
                     }
-                } else {
-                    // ========== 并发处理模式：每个标签独立协程处理，性能更好但不保证顺序 ==========
-                    // 循环处理直到队列为空或计数器归零，确保所有标签都被处理
-                    while (pendingCount.get() > 0) {
-                        val tag = pendingTags.poll()
-                        if (tag != null) {
-                            // 成功取出标签后才减少计数
-                            pendingCount.decrementAndGet()
-                            // 每个标签启动独立协程，并发执行
-                            coroutineScope.launch { block(tag) }
-                        } else {
-                            // 队列为空但计数器不为零，可能存在竞态条件
-                            // 退出循环，等待下次 LiveData 触发重新处理
-                            break
-                        }
+                    .collect { busEvent ->
+                        busEvent.tag?.let { channel.send(it) }
+                    }
+            }
+
+            // 消费者：只在前台（STARTED 及以上状态）消费标签
+            // 后台期间标签缓存在 Channel 中，回到前台后按 FIFO 顺序逐个处理
+            lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                for (tag in channel) {
+                    if (serialProcessing) {
+                        // 串行处理模式（默认）：for 循环天然串行，保证标签按顺序处理
+                        // 无需 Mutex，Channel 的 FIFO 语义已保证顺序
+                        block(tag)
+                    } else {
+                        // 并发处理模式：每个标签启动独立协程，性能更好但不保证处理顺序
+                        launch { block(tag) }
                     }
                 }
             }
-        }
-
-        coroutineScope.launch {
-            targetEventFlow
-                .filter { busEvent ->
-                    busEvent.event === FlowTag &&
-                            !busEvent.tag.isNullOrBlank() &&
-                            (tags.isEmpty() || tags.contains(busEvent.tag))
-                }
-                .collect { busEvent ->
-                    val tag = busEvent.tag ?: return@collect
-                    // 先增加计数器，确保观察者能感知到有待处理标签
-                    pendingCount.incrementAndGet()
-                    // 再将标签加入队列
-                    pendingTags.offer(tag)
-                    // 使用时间戳确保 LiveData 值变化，触发观察者
-                    triggerLiveData.postValue(System.nanoTime())
-                }
         }
     }
 }
 
 /**
- * 使用LiveData将标签消息延迟到前台接收
+ * 使用 Channel + repeatOnLifecycle 将标签消息延迟到前台接收
  * 确保标签处理在UI可见时进行
  *
+ * 实现原理：
+ * - 生产者持续收集 SharedFlow 标签事件并放入 Channel，不受前后台切换影响
+ * - 消费者通过 repeatOnLifecycle 只在前台（STARTED+）从 Channel 取数据处理
+ * - Channel 是破坏性读取（消费即移除），不会因前后台切换导致重复消费
+ *
  * 处理模式说明：
- * - onlyReceiveLatest = true: 只接收最新标签，回到前台只处理最后一个
- * - onlyReceiveLatest = false: 使用队列 + AtomicInteger计数器，确保所有标签都能被接收
- *   - serialProcessing = true（默认）: 串行处理，使用Mutex互斥锁保证标签按顺序处理
- *   - serialProcessing = false: 并发处理，性能更好，但不保证处理顺序
+ * - onlyReceiveLatest = true: 使用 Channel.CONFLATED，只保留最新标签，回到前台只处理最后一个
+ * - onlyReceiveLatest = false: 使用 Channel.UNLIMITED，无界缓冲，保证所有标签都能被接收
+ *   - serialProcessing = true（默认）: for 循环天然串行，保证标签按顺序处理
+ *   - serialProcessing = false: 每个标签启动独立协程，并发处理，性能更好但不保证顺序
  *
  * @param tags 要监听的标签数组，为空时接收所有标签
  * @param lifeEvent 生命周期事件，默认为ON_DESTROY时停止监听
  * @param onlyReceiveLatest 回到前台后是否只接收最后一次的值，默认为false
- * @param serialProcessing 是否串行处理标签（使用Mutex保证顺序），默认为true（串行处理，保证顺序）
+ * @param serialProcessing 是否串行处理标签（for循环天然保证顺序），默认为true（串行处理，保证顺序）
  * @param bus 事件总线实例，默认使用全局实例，可传入独立实例实现隔离
  * @param block 接收到标签时执行的挂起函数
  * @return 返回可用于取消监听的Job对象

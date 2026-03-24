@@ -42,3 +42,16 @@ data class PriceEvent(
     val price: Double,
     val timestamp: Long = System.currentTimeMillis()
 )
+
+/**
+ * 批处理任务事件（用于演示 serialProcessing 串行/并行处理模式对比）
+ *
+ * 使用方式：
+ * - 同时注册 serialProcessing=true 和 serialProcessing=false 的接收者
+ * - 发送多个 TaskEvent，观察两种模式下的处理顺序差异
+ */
+data class TaskEvent(
+    val taskId: Int,
+    val taskName: String,
+    val processingTimeMs: Long = 200L  // 模拟处理耗时，用于凸显串行/并行差异
+)

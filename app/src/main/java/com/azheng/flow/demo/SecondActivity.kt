@@ -16,20 +16,31 @@ class SecondActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivitySecondBinding
     private val TAG = "SecondActivity"
+
+    // 不绑定生命周期的 Job，必须手动取消
     private var handlerJob: Job? = null
     private var chatHandlerJob: Job? = null
+
+    // 【新增】receiveTagHandler 的 Job
+    private var tagHandlerJob: Job? = null
+    private var chatTagHandlerJob: Job? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivitySecondBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
+        // 先注册接收者，再设置发送按钮
         setupReceiveEvents()
         setupSendButtons()
     }
 
     /**
      * 设置接收事件 - 展示各种接收方式
+     *
+     * 线程说明：
+     * - 生命周期绑定的接收者回调在 Dispatchers.Main.immediate（主线程）
+     * - receiveEventHandler / receiveTagHandler 回调在 Dispatchers.Default（后台线程）
      */
     private fun setupReceiveEvents() {
         // ==================== 基础接收 ====================
@@ -51,29 +62,45 @@ class SecondActivity : AppCompatActivity() {
             updateLog("【VIP】${event.content}")
         }
 
-        // ==================== LiveData 模式接收 ====================
+        // ==================== 前台感知接收（receiveEventLive） ====================
 
-        // 4. receiveEventLive - 后台事件延迟到前台处理
-        // 场景：App 在后台时收到多条消息，回到前台时统一处理
+        // 4. 后台事件延迟到前台处理（接收所有事件）
+        //    场景：App 在后台时收到多条消息，回到前台时按 FIFO 顺序统一处理
         receiveEventLive<RefreshEvent>(
-            onlyReceiveLatest = false  // false: 处理所有事件
+            onlyReceiveLatest = false  // false: 使用 Channel(UNLIMITED)，处理所有事件
         ) { event ->
             Log.d(TAG, "LiveData收到 RefreshEvent: ${event.dataType}")
             updateLog("【LiveData】刷新: ${event.dataType}")
         }
 
-        // 5. receiveEventLive - 只处理最新事件
-        // 场景：用户位置更新，只关心最新位置
+        // 5. 只处理最新事件
+        //    场景：用户位置更新，只关心最新位置，旧位置无意义
         receiveEventLive<MessageEvent>(
             "location_update",
-            onlyReceiveLatest = true  // true: 只处理最后一个
+            onlyReceiveLatest = true  // true: 使用 Channel(CONFLATED)，只保留最后一个
         ) { event ->
             updateLog("【最新位置】${event.content}")
         }
 
+        // 【新增】6. receiveEventLive - 自定义 lifeEvent = ON_STOP + 并行处理
+        //    ON_STOP 时整个机制取消（包括生产者和消费者）
+        //    serialProcessing = false：每个事件启动独立协程并发处理
+        //    适合 Activity 可见期间的独立并发任务（如批量图片预加载）
+        receiveEventLive<TaskEvent>(
+            "task_demo",
+            lifeEvent = Lifecycle.Event.ON_STOP,
+            onlyReceiveLatest = false,
+            serialProcessing = false  // 并行模式
+        ) { event ->
+            Log.d(TAG, "【并行-ON_STOP】开始: ${event.taskName}")
+            delay(event.processingTimeMs)
+            Log.d(TAG, "【并行-ON_STOP】完成: ${event.taskName}")
+            updateLog("【并行-ON_STOP完成】${event.taskName}")
+        }
+
         // ==================== 标签接收 ====================
 
-        // 6. 接收指定标签
+        // 7. 接收指定标签，根据标签执行不同操作
         receiveTag("action_refresh", "action_sync", "action_logout") { tag ->
             Log.d(TAG, "收到标签: $tag")
             updateLog("标签事件: $tag")
@@ -85,7 +112,7 @@ class SecondActivity : AppCompatActivity() {
             }
         }
 
-        // 7. receiveTagLive - 后台标签延迟到前台处理
+        // 8. receiveTagLive - 后台标签延迟到前台处理
         receiveTagLive(
             "background_task_complete",
             onlyReceiveLatest = false
@@ -93,9 +120,27 @@ class SecondActivity : AppCompatActivity() {
             updateLog("【LiveData标签】$tag")
         }
 
+        // 【新增】9. receiveTagLive - onlyReceiveLatest = true
+        //    后台期间多个标签到来只保留最后一个
+        //    适合状态指示类（如最新同步状态），只关心最终结果
+        receiveTagLive(
+            "status_update_#1", "status_update_#2", "status_update_#3",
+            "status_update_#4", "status_update_#5",
+            onlyReceiveLatest = true
+        ) { tag ->
+            Log.d(TAG, "前台收到最新状态标签: $tag")
+            updateLog("【最新状态标签】$tag")
+        }
+
+        // 【新增】10. receiveTag 零标签 - 接收所有标签事件（全局标签监控）
+        receiveTag { tag ->
+            Log.d(TAG, "【全局标签监控】收到: $tag")
+        }
+
         // ==================== 自定义生命周期事件 ====================
 
-        // 8. 指定在 ON_STOP 时停止接收（而不是默认的 ON_DESTROY）
+        // 11. 指定在 ON_STOP 时停止接收（而不是默认的 ON_DESTROY）
+        //     适合只需在可见期间接收的场景
         receiveEvent<MessageEvent>(
             lifeEvent = Lifecycle.Event.ON_STOP
         ) { event ->
@@ -104,32 +149,42 @@ class SecondActivity : AppCompatActivity() {
 
         // ==================== 不绑定生命周期的接收 ====================
 
-        // 9. receiveEventHandler - 需要手动取消！
+        // 12. receiveEventHandler - 运行在 Dispatchers.Default
+        //     ⚠️ 必须在 onDestroy 中手动取消！回调在后台线程，不可直接操作 UI
         handlerJob = receiveEventHandler<LoginEvent> { event ->
             Log.d(TAG, "Handler收到: ${event.userName}")
         }
 
+        // 【新增】13. receiveTagHandler - 不绑定生命周期的标签接收
+        //     运行在 Dispatchers.Default（后台线程）
+        //     ⚠️ 必须在 onDestroy 中手动取消！
+        //     适合后台标签处理（如埋点上报）
+        tagHandlerJob = receiveTagHandler("action_refresh", "action_sync") { tag ->
+            Log.d(TAG, "【TagHandler 后台】收到标签: $tag")
+        }
+
         // ==================== 独立Bus接收示例 ====================
 
-        // 10. 接收 chatBus 上的 ChatEvent
+        // 14. 接收 chatBus 上的 ChatEvent（全局 Bus 的 ChatEvent 不会触发）
         receiveEvent<ChatEvent>(bus = AppBus.chatBus) { event ->
             Log.d(TAG, "【chatBus】收到: ${event.from} - ${event.message}")
             updateLog("【chatBus】${event.from}: ${event.message}")
         }
 
-        // 11. 接收全局 Bus 上的 ChatEvent（验证隔离）
+        // 15. 接收全局 Bus 上的 ChatEvent（chatBus 的 ChatEvent 不会触发，验证隔离）
         receiveEvent<ChatEvent> { event ->
             Log.d(TAG, "【全局Bus】收到 ChatEvent: ${event.from} - ${event.message}")
             updateLog("【全局Bus-Chat】${event.from}: ${event.message}")
         }
 
-        // 12. 接收 pricingBus 上的 PriceEvent
+        // 16. 接收 pricingBus 上的 PriceEvent（始终活跃，后台也能接收）
+        //     如需后台持久化行情数据，用 receiveEvent 而不是 receiveEventLive
         receiveEvent<PriceEvent>(bus = AppBus.pricingBus) { event ->
             Log.d(TAG, "【pricingBus】行情: ${event.symbol} = ${event.price}")
             updateLog("【pricingBus】${event.symbol}: $${event.price}")
         }
 
-        // 13. 使用 receiveEventLive 接收 chatBus 上的消息（后台延迟到前台）
+        // 17. 使用 receiveEventLive 接收 chatBus 上的消息（后台延迟到前台刷新 UI）
         receiveEventLive<ChatEvent>(
             onlyReceiveLatest = false,
             bus = AppBus.chatBus
@@ -138,13 +193,13 @@ class SecondActivity : AppCompatActivity() {
             updateLog("【chatBus-Live】${event.from}: ${event.message}")
         }
 
-        // 14. 接收 chatBus 上的标签
+        // 18. 接收 chatBus 上的标签
         receiveTag("chat_typing", "chat_online", bus = AppBus.chatBus) { tag ->
             Log.d(TAG, "【chatBus】标签: $tag")
             updateLog("【chatBus标签】$tag")
         }
 
-        // 15. receiveTagLive 接收 chatBus 上的标签（后台延迟到前台）
+        // 19. receiveTagLive 接收 chatBus 上的标签（后台延迟到前台）
         receiveTagLive(
             "chat_new_member",
             onlyReceiveLatest = false,
@@ -153,16 +208,25 @@ class SecondActivity : AppCompatActivity() {
             updateLog("【chatBus-TagLive】$tag")
         }
 
-        // 16. 不绑定生命周期的独立 Bus 事件接收（需要手动取消！）
+        // 20. 不绑定生命周期的独立 Bus 事件接收
+        //     ⚠️ 必须在 onDestroy 中手动取消！
         chatHandlerJob = receiveEventHandler<ChatEvent>(bus = AppBus.chatBus) { event ->
             Log.d(TAG, "【chatBus Handler】收到: ${event.from} - ${event.message}")
+        }
+
+        // 【新增】21. receiveTagHandler - 不绑定生命周期的独立 Bus 标签接收
+        //     ⚠️ 必须在 onDestroy 中手动取消！
+        chatTagHandlerJob = receiveTagHandler("chat_typing", "chat_online", bus = AppBus.chatBus) { tag ->
+            Log.d(TAG, "【chatBus TagHandler 后台】收到标签: $tag")
         }
     }
 
     /**
-     * 设置发送按钮 - 从 SecondActivity 发送事件回 MainActivity
+     * 设置发送按钮 - 从 SecondActivity 发送事件（两个 Activity 的接收者都能收到）
      */
     private fun setupSendButtons() {
+        // ==================== 全局 Bus 发送 ====================
+
         // 发送登录成功事件
         binding.btnSendLoginSuccess.setOnClickListener {
             sendEvent(LoginEvent("user_002", "李四"))
@@ -190,7 +254,7 @@ class SecondActivity : AppCompatActivity() {
             showToast("已发送刷新标签")
         }
 
-        // 批量发送位置更新（测试 onlyReceiveLatest）
+        // 批量发送位置更新（测试 onlyReceiveLatest：只有最后一条会被处理）
         binding.btnSendLocationUpdates.setOnClickListener {
             lifecycleScope.launch {
                 repeat(10) { index ->
@@ -204,7 +268,7 @@ class SecondActivity : AppCompatActivity() {
             }
         }
 
-        // 模拟后台任务完成
+        // 模拟后台任务完成（发送多个标签）
         binding.btnBackgroundTaskComplete.setOnClickListener {
             lifecycleScope.launch {
                 repeat(3) { index ->
@@ -213,6 +277,47 @@ class SecondActivity : AppCompatActivity() {
                 }
                 showToast("已发送 3 次后台任务完成标签")
             }
+        }
+
+        // ==================== 新增示例 ====================
+
+        // 【新增】批量发送 TaskEvent（触发 MainActivity/SecondActivity 的串行/并行处理对比）
+        binding.btnSendTaskBatch.setOnClickListener {
+            lifecycleScope.launch {
+                repeat(5) { index ->
+                    sendEventSuspend(
+                        event = TaskEvent(
+                            taskId = index + 1,
+                            taskName = "任务${index + 1}",
+                            processingTimeMs = (5 - index) * 100L
+                        ),
+                        tag = "task_demo"
+                    )
+                }
+                showToast("已发送 5 个 TaskEvent")
+            }
+        }
+
+        // 【新增】快速发送多个标签（测试 receiveTagLive onlyReceiveLatest=true）
+        binding.btnSendMultipleTags.setOnClickListener {
+            lifecycleScope.launch {
+                repeat(5) { index ->
+                    sendTagSuspend("status_update_#${index + 1}")
+                    delay(30)
+                }
+                showToast("已快速发送 5 个 status_update 标签")
+            }
+        }
+
+        // 【新增】发送标签到 pricingBus（验证标签在任何独立 Bus 上都可用）
+        binding.btnSendTagPricingBus.setOnClickListener {
+            sendTag("price_alert", bus = AppBus.pricingBus)
+            showToast("已发送标签 price_alert 到 pricingBus")
+        }
+
+        // 【新增】清空日志
+        binding.btnClearLog.setOnClickListener {
+            binding.tvLog.text = "日志已清空"
         }
 
         // ==================== 独立Bus发送示例 ====================
@@ -226,7 +331,7 @@ class SecondActivity : AppCompatActivity() {
             showToast("已发送 ChatEvent 到 chatBus")
         }
 
-        // 发送行情到 pricingBus（使用 LifecycleOwner 扩展函数）
+        // 发送行情到 pricingBus（使用 LifecycleOwner 扩展函数，绑定生命周期）
         binding.btnSendPriceBus.setOnClickListener {
             this.sendEvent(
                 event = PriceEvent("GOOG", 175.50),
@@ -267,7 +372,7 @@ class SecondActivity : AppCompatActivity() {
             }
         }
 
-        // 隔离对比测试：同时向全局和 chatBus 发送
+        // 隔离对比测试：同时向全局 Bus 和 chatBus 发送同类型事件
         binding.btnIsolationTest.setOnClickListener {
             lifecycleScope.launch {
                 sendEventSuspend(ChatEvent("系统", "这条在全局Bus"))
@@ -295,6 +400,9 @@ class SecondActivity : AppCompatActivity() {
         updateLog("→ 正在登出...")
     }
 
+    /**
+     * 更新日志显示
+     */
     private fun updateLog(message: String) {
         runOnUiThread {
             val currentText = binding.tvLog.text.toString()
@@ -308,8 +416,10 @@ class SecondActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        // 重要：取消不绑定生命周期的 Job
+        // 重要：取消不绑定生命周期的 Job，避免内存泄漏
         handlerJob?.cancel()
         chatHandlerJob?.cancel()
+        tagHandlerJob?.cancel()
+        chatTagHandlerJob?.cancel()
     }
 }

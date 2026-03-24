@@ -7,7 +7,8 @@
 
 - 生命周期感知
 - 事件 + Tag 精准过滤
-- 前台延迟消费
+- 前台延迟消费（Channel + repeatOnLifecycle）
+- 串行/并行处理模式
 - 独立 Bus 隔离
 - 可配置缓冲区与溢出策略
 - 协程友好、线程安全
@@ -44,12 +45,17 @@
   - 到指定生命周期事件时自动取消订阅，避免泄漏
 
 - **Tag 过滤**
-  - 支持“事件类型 + Tag”组合过滤
+  - 支持"事件类型 + Tag"组合过滤
   - 也支持仅发送/接收 Tag
 
 - **前台延迟消费**
-  - 借助 `LiveData`，将事件延迟到页面活跃状态再处理
+  - 借助 `Channel + repeatOnLifecycle`，将事件延迟到页面活跃状态（`STARTED+`）再处理
+  - Channel 天然 FIFO 保序、破坏性读取（消费即移除），不会因前后台切换导致重复消费
   - 适合 UI 可见时才应该执行的逻辑
+
+- **串行/并行处理模式**
+  - `serialProcessing = true`（默认）：`for` 循环天然串行，保证事件按顺序处理
+  - `serialProcessing = false`：每个事件启动独立协程，并发处理，性能更好但不保证顺序
 
 - **灵活配置**
   - 支持 `replaySize`
@@ -57,7 +63,9 @@
   - 支持 `BufferOverflow` 策略
 
 - **线程安全**
-  - 使用原子类、并发队列、协程锁等手段保证并发安全
+  - `SharedFlow` 本身是线程安全的
+  - `Channel` 天然支持并发安全的生产-消费模型
+  - 全局 Bus 使用 `volatile` + `AtomicBoolean` + 双重检查锁保证初始化安全
 
 - **多 Bus 隔离**
   - 支持全局默认 Bus
@@ -69,11 +77,26 @@
 
 EventFlow 的核心思路：
 
-1. 用 `SharedFlow` 作为事件总线
+1. 用 `SharedFlow` 作为事件总线管道
 2. 用 `LifecycleOwner + CoroutineScope` 管理页面级订阅
-3. 用 `LiveData` 将某些事件延迟到页面活跃时再处理
+3. 用 `Channel + repeatOnLifecycle` 将某些事件延迟到页面活跃时再处理
 4. 用缓冲区和溢出策略控制高并发场景下的行为
 5. 用全局默认 Bus + 独立 Bus 实现实例级隔离
+
+### 架构总览
+
+
+┌──────────┐    emit     ┌─────────────────┐    collect     ┌──────────┐
+│ 发送方    │ ─────────► │ MutableSharedFlow │ ─────────►    │ 接收方    │
+│ sendEvent │            │   (事件管道)       │              │ receiveX │
+│ sendTag   │            │  FlowEvent<T>     │              │          │
+└──────────┘            └─────────────────┘              └──────────┘
+│
+┌──────┴──────┐
+│             │
+receiveEvent  receiveEventLive
+(直接 collect)  (Channel + repeatOnLifecycle)
+
 
 ### 核心对象
 
@@ -82,8 +105,8 @@ EventFlow 的核心思路：
 | `FlowEvent<T>` | 事件载体，封装 `event + tag` |
 | `FlowEventBus` | 事件总线，内部基于 `MutableSharedFlow` |
 | `FlowEventBusConfig` | 总线配置：`replaySize`、`extraBufferCapacity`、`bufferOverflow` |
-| `FlowScope` | 协程作用域：无参默认 `Dispatchers.Default`；生命周期版默认 `Dispatchers.Main.immediate` |
-| `FlowTag` | 纯标签事件标记，用于只发送标签不发送对象 |
+| `FlowScope` | 协程作用域：无参默认 `Dispatchers.Default`；生命周期版默认 `Dispatchers.Main.immediate`，使用 `SupervisorJob` 隔离子协程失败 |
+| `FlowTag` | 纯标签事件标记单例，用于只发送标签不发送对象 |
 
 ### 全局默认 Bus 与独立 Bus
 
@@ -128,6 +151,8 @@ dependencyResolutionManagement {
 ```groovy
 dependencies {
     implementation 'com.github.azheng95:EventFlow:Tag'
+    //需要添加 lifecycle-runtime-ktx 库
+    implementation "androidx.lifecycle:lifecycle-runtime-ktx:2.10.0"
 }
 ```
 
@@ -237,11 +262,23 @@ this.receiveTag("refresh_home") { tag ->
 }
 ```
 
-#### 4.4 非生命周期场景接收
+#### 4.4 非生命周期场景接收事件
 
 ```kotlin
 val job = receiveEventHandler<OrderPaidEvent>("pay") { event ->
     uploadPayLog(event)
+}
+
+// 不再需要时手动取消
+job.cancel()
+```
+
+#### 4.5 非生命周期场景接收标签
+
+```kotlin
+val job = receiveTagHandler("action_refresh", "action_sync") { tag ->
+    // 在后台线程处理标签
+    logTagEvent(tag)
 }
 
 // 不再需要时手动取消
@@ -338,7 +375,7 @@ val job = receiveEventHandler<OrderPaidEvent>("pay") { event ->
 | API | 生命周期感知 | 延迟到活跃状态处理 | 需要手动取消 | 默认调度器 | 说明 |
 |---|---|---|---|---|---|
 | `receiveEvent<T>()` | 是 | 否 | 否 | `Dispatchers.Main.immediate` | 立即接收并处理 |
-| `receiveEventLive<T>()` | 是 | 是 | 否 | `Dispatchers.Main.immediate` | 后台期间缓存，页面活跃时再处理 |
+| `receiveEventLive<T>()` | 是 | 是 | 否 | `Dispatchers.Main.immediate` | 后台期间缓存到 Channel，页面活跃时再处理 |
 | `receiveEventHandler<T>()` | 否 | 否 | 是 | `Dispatchers.Default` | 非生命周期场景，必须手动取消 |
 | `receiveTag()` | 是 | 否 | 否 | `Dispatchers.Main.immediate` | 只接收纯标签事件 |
 | `receiveTagLive()` | 是 | 是 | 否 | `Dispatchers.Main.immediate` | 标签在页面活跃时处理 |
@@ -388,23 +425,29 @@ val pricingBus = FlowEventBus.create(
 
 ### 推荐：集中管理独立 Bus
 
+建议使用 `lazy` 延迟初始化，首次访问时才创建实例：
+
 ```kotlin
 object AppBus {
 
-    val chatBus: FlowEventBus = FlowEventBus.create(
-        FlowEventBusConfig.Builder()
-            .setExtraBufferCapacity(4096)
-            .setBufferOverflow(BufferOverflow.SUSPEND)
-            .build()
-    )
+    val chatBus: FlowEventBus by lazy {
+        FlowEventBus.create(
+            FlowEventBusConfig.Builder()
+                .setExtraBufferCapacity(4096)
+                .setBufferOverflow(BufferOverflow.SUSPEND)
+                .build()
+        )
+    }
 
-    val pricingBus: FlowEventBus = FlowEventBus.create(
-        FlowEventBusConfig.Builder()
-            .setReplaySize(1)
-            .setExtraBufferCapacity(1024)
-            .setBufferOverflow(BufferOverflow.DROP_OLDEST)
-            .build()
-    )
+    val pricingBus: FlowEventBus by lazy {
+        FlowEventBus.create(
+            FlowEventBusConfig.Builder()
+                .setReplaySize(1)
+                .setExtraBufferCapacity(1024)
+                .setBufferOverflow(BufferOverflow.DROP_OLDEST)
+                .build()
+        )
+    }
 }
 ```
 
@@ -453,9 +496,9 @@ this.receiveEvent<OrderPaidEvent> { event ->
 
 特点：
 
-- 订阅后立即接收
+- 直接 `collect` SharedFlow，订阅后立即接收
 - 默认在 `ON_DESTROY` 时取消
-- 页面不在前台时，只要没有销毁，仍可能继续处理
+- 页面不在前台时，只要没有销毁，仍会继续处理事件
 - 默认运行在主线程
 - 适合页面内即时响应、普通业务处理
 
@@ -472,21 +515,39 @@ this.receiveEventLive<OrderPaidEvent>(
 
 特点：
 
-- 内部仍然持续收集 Flow 事件
-- 但真正执行 `block` 时，会延迟到页面活跃状态（通常可理解为前台）
+- 内部使用 **Channel + `repeatOnLifecycle(STARTED)`** 实现前台延迟消费
+- 生产者（collect SharedFlow → Channel）始终活跃，不受前后台切换影响
+- 消费者（从 Channel 取数据执行 block）只在页面活跃状态（`STARTED+`）运行
+- Channel 是破坏性读取（消费即移除），回到前台不会重复消费已处理的事件
 - 默认运行在主线程
 - 适合必须在 UI 可见时才处理的事件
+
+### 内部工作流程
+
+```
+SharedFlow ──collect──► Channel ──repeatOnLifecycle(STARTED)──► block(event)
+  (始终活跃)          (缓冲事件)        (仅前台消费)
+```
 
 ### 对比总结
 
 | 维度 | `receiveEvent` | `receiveEventLive` |
 |---|---|---|
+| 实现方式 | 直接 collect SharedFlow | Channel + repeatOnLifecycle |
 | 是否立即处理 | 是 | 否，活跃时再处理 |
 | 是否适合前台 UI 消费 | 一般 | 更适合 |
-| 后台期间行为 | 可能继续处理 | 先缓存，前台再处理 |
+| 后台期间行为 | 继续处理 | 缓存到 Channel，前台再处理 |
+| 回到前台是否重复消费 | 不适用 | 否（Channel 破坏性读取） |
 | 默认线程 | 主线程 | 主线程 |
 
 ### `onlyReceiveLatest`
+
+控制后台期间的缓存策略：
+
+| `onlyReceiveLatest` | Channel 类型 | 行为 |
+|---|---|---|
+| `true` | `Channel.CONFLATED` | 后台期间多个事件只保留最后一个，回到前台只处理最新的 |
+| `false`（默认） | `Channel.UNLIMITED` | 所有事件都缓存，回到前台后按 FIFO 顺序逐个处理 |
 
 当你只关心最新状态时，使用：
 
@@ -501,8 +562,7 @@ this.receiveEventLive<UploadProgressEvent>(
 
 适合：
 
-- 上传进度
-- 下载进度
+- 上传/下载进度
 - 定位更新
 - 传感器数据
 - 股票/行情快照
@@ -514,11 +574,10 @@ this.receiveEventLive<UploadProgressEvent>(
 
 #### `serialProcessing = true`（默认）
 
-- 使用 `Mutex`
-- 按顺序处理
-- 适合顺序敏感场景
+- `for` 循环天然串行，保证事件按顺序处理
+- Channel 的 FIFO 语义已保证顺序，无需额外同步原语
 
-例如：
+适合：
 
 - 聊天消息
 - 订单状态流转
@@ -527,15 +586,16 @@ this.receiveEventLive<UploadProgressEvent>(
 
 #### `serialProcessing = false`
 
-- 每个事件独立协程处理
+- 每个事件启动独立协程（`launch`）处理
 - 吞吐更高
-- 不保证顺序
+- 不保证处理顺序
 
-例如：
+适合：
 
 - 多个独立 UI 刷新
 - 埋点上报
 - 相互无依赖的轻量处理
+- 独立的图片下载任务
 
 > 注意：`serialProcessing = false` 不等于自动切到后台线程。  
 > 生命周期相关 API 默认仍运行在主线程。  
@@ -559,13 +619,13 @@ MutableSharedFlow(
 
 给**新订阅者**重放的历史事件数量。
 
-- `0`：不保留历史
+- `0`（默认）：不保留历史
 - `1`：新订阅者立刻拿到最近一条
 - `N`：新订阅者拿到最近 N 条
 
 ### 2. `extraBufferCapacity`
 
-额外缓冲区容量，主要用于应对：
+额外缓冲区容量（默认 2048），主要用于应对：
 
 - 短时间高频发送
 - 收集端来不及消费
@@ -583,13 +643,13 @@ MutableSharedFlow(
 
 | 策略 | 含义 | 优点 | 缺点 | 适合场景 |
 |---|---|---|---|---|
-| `SUSPEND` | 缓冲区满时挂起发送者 | 尽量不丢事件 | 发送方可能等待 | 支付、订单、IM、关键通知 |
-| `DROP_OLDEST` | 丢弃最旧事件 | 尽量保留最新状态 | 历史事件会丢 | 进度、定位、传感器、行情 |
+| `SUSPEND`（默认） | 缓冲区满时挂起发送者 | 保证事件不丢失 | 发送方可能等待 | 支付、订单、IM、关键通知 |
+| `DROP_OLDEST` | 丢弃最旧事件 | 保留最新状态 | 历史事件会丢 | 进度、定位、传感器、行情 |
 | `DROP_LATEST` | 丢弃最新事件 | 保护旧数据 | 新事件被忽略 | 极少数保旧弃新场景 |
 
 ### 重要说明
 
-> `SUSPEND` 不等于“未来订阅者一定能收到历史消息”。
+> `SUSPEND` 不等于"未来订阅者一定能收到历史消息"。
 
 如果：
 
@@ -642,13 +702,25 @@ this.receiveEventLive<UploadProgressEvent>(
 this.receiveEventLive<ChatMessageEvent>(
     "chat_room_1",
     onlyReceiveLatest = false,
-    serialProcessing = true
+    serialProcessing = true  // 默认值，for 循环天然串行
 ) { event ->
     appendMessage(event)
 }
 ```
 
-### 4. 纯标签事件：刷新页面
+### 4. 批量任务：并行处理
+
+```kotlin
+this.receiveEventLive<TaskEvent>(
+    "task_demo",
+    onlyReceiveLatest = false,
+    serialProcessing = false  // 每个事件启动独立协程
+) { event ->
+    processTask(event)
+}
+```
+
+### 5. 纯标签事件：刷新页面
 
 ```kotlin
 sendTag("refresh_home")
@@ -660,40 +732,59 @@ this.receiveTag("refresh_home") {
 
 > `receiveTag / receiveTagLive` 会过滤掉 `null`、空字符串和空白字符串。
 
-### 5. 非生命周期接收：记得手动取消
+### 6. 零标签：接收所有标签事件
+
+```kotlin
+// 不传任何标签参数，匹配所有 FlowTag 事件
+// 适合全局标签监控、日志记录
+this.receiveTag { tag ->
+    Log.d(TAG, "收到标签: $tag")
+}
+```
+
+### 7. 非生命周期接收：记得手动取消
 
 ```kotlin
 private var eventJob: Job? = null
+private var tagJob: Job? = null
 
 fun startListen() {
     eventJob = receiveEventHandler<OrderPaidEvent>("pay") { event ->
         uploadPayLog(event)
     }
+    tagJob = receiveTagHandler("action_refresh", "action_sync") { tag ->
+        logTagEvent(tag)
+    }
 }
 
 fun stopListen() {
     eventJob?.cancel()
+    tagJob?.cancel()
 }
 ```
 
-### 6. 独立 Bus：聊天和行情隔离
+### 8. 独立 Bus：聊天和行情隔离
 
 ```kotlin
 object AppBus {
-    val chatBus = FlowEventBus.create(
-        FlowEventBusConfig.Builder()
-            .setExtraBufferCapacity(4096)
-            .setBufferOverflow(BufferOverflow.SUSPEND)
-            .build()
-    )
+    val chatBus: FlowEventBus by lazy {
+        FlowEventBus.create(
+            FlowEventBusConfig.Builder()
+                .setExtraBufferCapacity(4096)
+                .setBufferOverflow(BufferOverflow.SUSPEND)
+                .build()
+        )
+    }
 
-    val pricingBus = FlowEventBus.create(
-        FlowEventBusConfig.Builder()
-            .setReplaySize(1)
-            .setExtraBufferCapacity(1024)
-            .setBufferOverflow(BufferOverflow.DROP_OLDEST)
-            .build()
-    )
+    val pricingBus: FlowEventBus by lazy {
+        FlowEventBus.create(
+            FlowEventBusConfig.Builder()
+                .setReplaySize(1)
+                .setExtraBufferCapacity(1024)
+                .setBufferOverflow(BufferOverflow.DROP_OLDEST)
+                .build()
+        )
+    }
 }
 
 data class ChatEvent(val from: String, val message: String)
@@ -702,7 +793,7 @@ data class PriceEvent(val symbol: String, val price: Double)
 // 发送到聊天 Bus
 sendEvent(ChatEvent("张三", "你好"), bus = AppBus.chatBus)
 
-// 接收聊天消息
+// 接收聊天消息（后台缓存，前台串行处理）
 this.receiveEventLive<ChatEvent>(
     onlyReceiveLatest = false,
     serialProcessing = true,
@@ -717,6 +808,46 @@ this.receiveEventLive<PriceEvent>(
     bus = AppBus.pricingBus
 ) { event ->
     updatePriceDisplay("${event.symbol}: $${event.price}")
+}
+```
+
+### 9. 自定义 CoroutineScope 发送
+
+```kotlin
+// 适合在非 LifecycleOwner、非 lifecycleScope 的场景中使用
+private val customScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
+sendEvent(
+    event = MessageEvent("自定义 Scope 发送"),
+    scope = customScope
+)
+
+// 注意：自定义 Scope 需要手动 cancel
+override fun onDestroy() {
+    super.onDestroy()
+    customScope.cancel()
+}
+```
+
+### 10. 数据层 + UI 层分离
+
+> `receiveEventLive` 的消费者只在前台运行，不适合后台数据持久化。  
+> 正确做法：**数据存储和 UI 更新是两条独立的链路**。
+
+```kotlin
+// ========== 数据层：始终活跃，后台也能存库 ==========
+this.receiveEvent<IMMessage> { msg ->
+    // 后台也会执行 ✅
+    withContext(Dispatchers.IO) {
+        messageDao.insert(msg)
+    }
+}
+
+// ========== UI 层：只在前台刷新界面 ==========
+this.receiveEventLive<IMMessage> { msg ->
+    // 只在前台执行 ✅（避免后台操作 UI）
+    adapter.addMessage(msg)
+    recyclerView.scrollToBottom()
 }
 ```
 
@@ -769,22 +900,22 @@ this.receiveEvent<OrderPaidEvent> { event ->
 
 ### 7. `lifeEvent = ON_STOP` 要谨慎
 
-这不是“暂停接收”，而是**直接取消订阅**。  
-如果你希望“后台不处理、前台再处理”，优先使用 `receiveEventLive`。
+这不是"暂停接收"，而是**直接取消订阅**（包括生产者和消费者都会被取消）。  
+如果你希望"后台不处理、前台再处理"，优先使用 `receiveEventLive`。
 
 ### 8. 注意 `receiveEventLive` 的缓存增长
 
-当 `onlyReceiveLatest = false` 时，后台期间会缓存所有事件。  
+当 `onlyReceiveLatest = false` 时，后台期间事件会缓存在 `Channel.UNLIMITED` 中。  
 如果事件量很大，应考虑：
 
 - 改成 `onlyReceiveLatest = true`
 - 做业务限流
 - 缩小事件粒度
-- 使用 `DROP_OLDEST`
+- 使用 `DROP_OLDEST` 策略的独立 Bus
 
 ### 9. 独立 Bus 建议集中管理
 
-建议使用 `object AppBus` 统一维护，便于查找和维护。
+建议使用 `object AppBus` 统一维护，搭配 `lazy` 延迟初始化，便于查找和维护。
 
 ### 10. 发送和接收必须使用同一个 Bus
 
@@ -797,6 +928,11 @@ this.receiveEvent<ChatEvent> { /* 收不到 */ }
 sendEvent(ChatEvent("张三", "你好"), bus = AppBus.chatBus)
 this.receiveEvent<ChatEvent>(bus = AppBus.chatBus) { /* 能收到 */ }
 ```
+
+### 11. 后台持久化不要用 `receiveEventLive`
+
+`receiveEventLive` 的消费者只在前台运行（`STARTED+`），后台不会执行 `block`。  
+需要后台持久化的场景（如 IM 消息存库），使用 `receiveEvent` 或在数据层直接处理。
 
 ---
 
@@ -818,7 +954,7 @@ this.receiveEvent<ChatEvent>(bus = AppBus.chatBus) { /* 能收到 */ }
 因为默认 `replaySize = 0`。  
 `SharedFlow` 不是消息队列，不会默认替未来订阅者保存历史值。
 
-如果你需要“后来的订阅者拿到最近值”，请设置：
+如果你需要"后来的订阅者拿到最近值"，请设置：
 
 ```kotlin
 setReplaySize(1)
@@ -828,13 +964,9 @@ setReplaySize(1)
 
 ### Q3：为什么设置了 `SUSPEND`，后来的人还是收不到历史消息？
 
-因为 `SUSPEND` 解决的是“缓冲区满时怎么处理”，不是“替未来订阅者保存历史”。
+因为 `SUSPEND` 解决的是"缓冲区满时怎么处理"，不是"替未来订阅者保存历史"。
 
-能否重放历史，取决于：
-
-```kotlin
-replaySize
-```
+能否重放历史，取决于 `replaySize`。
 
 ---
 
@@ -843,7 +975,7 @@ replaySize
 请检查：
 
 - tag 是否为 `null`
-- tag 是否为空字符串或空白字符串
+- tag 是否为空字符串或空白字符串（`receiveTag / receiveTagLive` 会过滤掉这些）
 - 监听 tag 是否匹配
 - 发送和接收是否使用了同一个 Bus
 
@@ -851,16 +983,9 @@ replaySize
 
 ### Q5：为什么我设置了 `serialProcessing = false`，还是会卡 UI？
 
-因为它只表示“不串行处理”，不表示“自动切后台线程”。
+因为它只表示"不串行处理（每个事件启动独立协程）"，不表示"自动切后台线程"。
 
-如果你使用的是生命周期相关 API：
-
-- `receiveEvent`
-- `receiveTag`
-- `receiveEventLive`
-- `receiveTagLive`
-
-它们默认仍运行在主线程。
+如果你使用的是生命周期相关 API（`receiveEventLive`、`receiveTagLive`），它们默认仍运行在主线程。
 
 正确做法：
 
@@ -879,13 +1004,16 @@ this.receiveEventLive<HeavyEvent>(
 
 ### Q6：什么时候用 `receiveEvent`，什么时候用 `receiveEventLive`？
 
-- **业务可以立即处理**：用 `receiveEvent`
-- **必须等页面活跃再处理**：用 `receiveEventLive`
+| 场景 | 推荐 API |
+|---|---|
+| 业务可以立即处理，后台也需要执行 | `receiveEvent` |
+| 必须等页面活跃再处理（UI 更新、弹窗等） | `receiveEventLive` |
+| 后台数据持久化 + 前台 UI 刷新 | 两者同时使用（数据层用 `receiveEvent`，UI 层用 `receiveEventLive`） |
 
 可以简单理解为：
 
-- `receiveEvent` = 直接消费
-- `receiveEventLive` = 先收着，活跃时再处理
+- `receiveEvent` = 直接消费（始终活跃）
+- `receiveEventLive` = 先缓存到 Channel，活跃时再处理
 
 ---
 
@@ -916,9 +1044,9 @@ FlowEventBus.create(config)
 
 ---
 
-### Q9：为什么 `receiveEventHandler()` 里直接更新 UI 会报线程问题？
+### Q9：为什么 `receiveEventHandler()` / `receiveTagHandler()` 里直接更新 UI 会报线程问题？
 
-因为它默认运行在 `Dispatchers.Default`，不是主线程。
+因为它们默认运行在 `Dispatchers.Default`，不是主线程。
 
 如果要更新 UI，请切回主线程：
 
@@ -929,6 +1057,25 @@ val job = receiveEventHandler<OrderPaidEvent>("pay") { event ->
     }
 }
 ```
+
+---
+
+### Q10：`receiveEventLive` 后台时事件会丢失吗？
+
+不会。后台期间：
+
+- **`onlyReceiveLatest = false`**（默认）：事件缓存在 `Channel.UNLIMITED` 中，回到前台后按 FIFO 顺序逐个处理，不会丢失
+- **`onlyReceiveLatest = true`**：使用 `Channel.CONFLATED`，只保留最后一个事件，之前的会被覆盖（这是预期行为，不是丢失）
+
+Channel 是破坏性读取（消费即移除），回到前台不会重复消费已处理的事件。
+
+---
+
+### Q11：`receiveEventLive` 能用来做后台数据持久化吗？
+
+不能。`receiveEventLive` 的消费者只在前台（`STARTED+`）运行。
+
+后台持久化应使用 `receiveEvent`（始终活跃），或在数据层直接处理。参考[数据层 + UI 层分离示例](#10-数据层--ui-层分离)。
 
 ---
 
@@ -956,6 +1103,20 @@ val job = receiveEventHandler<OrderPaidEvent>("pay") { event ->
 | 传感器模块 | 1 | 64 | `DROP_OLDEST` | 只保留最新采样 |
 | 测试专用 | 0 | 256 | `SUSPEND` | 简单稳定即可 |
 
+### 接收 API 速查
+
+| 你的需求 | 推荐 API |
+|---|---|
+| 页面内即时响应 | `receiveEvent` |
+| 必须在 UI 可见时处理 | `receiveEventLive` |
+| 后台数据持久化 | `receiveEvent` |
+| 只关心最新状态（前台延迟） | `receiveEventLive(onlyReceiveLatest = true)` |
+| 并发处理互不依赖的事件 | `receiveEventLive(serialProcessing = false)` |
+| 纯标签信号通知 | `receiveTag` / `receiveTagLive` |
+| 全局标签监控（零标签） | `receiveTag { tag -> ... }` |
+| 不绑定生命周期的事件处理 | `receiveEventHandler`（⚠️ 手动取消） |
+| 不绑定生命周期的标签处理 | `receiveTagHandler`（⚠️ 手动取消） |
+
 ---
 
 ## 总结
@@ -965,8 +1126,11 @@ EventFlow 的定位非常明确：
 - **关键业务不丢**：`SUSPEND`
 - **高频状态保最新**：`DROP_OLDEST + onlyReceiveLatest = true`
 - **模块隔离**：`FlowEventBus.create()`
-- **页面 UI 场景**：优先使用生命周期相关接收 API
-- **通用后台处理**：优先使用非生命周期 Handler
+- **页面 UI 场景**：优先使用 `receiveEventLive`
+- **后台数据持久化**：使用 `receiveEvent`
+- **串行保序**：`serialProcessing = true`（默认）
+- **并发高吞吐**：`serialProcessing = false`
+- **通用后台处理**：`receiveEventHandler / receiveTagHandler`（手动取消）
 - **默认不传 `bus`**：就是全局默认 Bus
 
 如果你希望在 Android 项目里拥有一个：

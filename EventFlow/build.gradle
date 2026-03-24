@@ -34,6 +34,8 @@ dependencies {
 
     compileOnly  libs.androidx.core.ktx
     compileOnly  libs.androidx.appcompat
+    compileOnly "androidx.lifecycle:lifecycle-runtime-ktx:2.10.0"
+
     testImplementation libs.junit
     androidTestImplementation libs.androidx.junit
     androidTestImplementation libs.androidx.espresso.core
