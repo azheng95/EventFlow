@@ -11,6 +11,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -187,13 +188,20 @@ internal fun <T> LifecycleOwner.receiveEventLiveImpl(
 
     return if (onlyReceiveLatest) {
         // ========== 只接收最新事件的模式 ==========
-        // 使用 AtomicReference 保存最新事件，确保线程安全
-        val latestEventContainer = AtomicReference<T?>(null)
-        val liveData = MutableLiveData<T>().apply {
-            observe(lifecycleOwner) { event ->
-                // 只有当事件是最新的才处理，避免处理过期事件
-                if (event != null && event === latestEventContainer.get()) {
-                    coroutineScope.launch { block(event) }
+        // 使用 AtomicLong 生成单调递增的版本号，配合 Versioned 包装类
+        // 避免直接对事件对象使用 === 引用比较的隐患：
+        // - 基本类型（Int、Long 等）经过装箱后引用行为不可预测
+        // - 字符串字面量被 JVM intern，不同位置的相同字面量 === 为 true
+        // - data class 的 copy() 或解构重建会产生不同引用
+        val versionCounter = AtomicLong(0)
+        // 使用 AtomicReference 保存最新的 Versioned 包装对象，确保线程安全
+        val latestVersioned = AtomicReference<Versioned<T>?>(null)
+        val liveData = MutableLiveData<Versioned<T>>().apply {
+            observe(lifecycleOwner) { versioned ->
+                // 通过版本号（Long 值比较）判断是否为最新事件
+                // 语义清晰且不依赖 JVM 引用相等的实现细节
+                if (versioned != null && versioned.version == latestVersioned.get()?.version) {
+                    coroutineScope.launch { block(versioned.value) }
                 }
             }
         }
@@ -203,8 +211,11 @@ internal fun <T> LifecycleOwner.receiveEventLiveImpl(
                 .filter { busEvent -> eventClass.isInstance(busEvent.event) && (tags.isEmpty() || tags.contains(busEvent.tag)) }
                 .collect { busEvent ->
                     val event = busEvent.event as T
-                    latestEventContainer.set(event)
-                    liveData.postValue(event)
+                    // 创建带版本号的包装对象，版本号单调递增保证唯一性
+                    val versioned = Versioned(event, versionCounter.incrementAndGet())
+                    // 先更新最新版本引用，再通过 LiveData 通知观察者
+                    latestVersioned.set(versioned)
+                    liveData.postValue(versioned)
                 }
         }
     } else {
@@ -387,13 +398,19 @@ internal fun LifecycleOwner.receiveTagLiveImpl(
 
     return if (onlyReceiveLatest) {
         // ========== 只接收最新标签的模式 ==========
-        // 使用 AtomicReference 保存最新标签，确保线程安全
-        val latestTagContainer = AtomicReference<String?>(null)
-        val liveData = MutableLiveData<String>().apply {
-            observe(lifecycleOwner) { tag ->
-                // 只有当标签是最新的才处理，避免处理过期标签
-                if (tag != null && tag === latestTagContainer.get()) {
-                    coroutineScope.launch { block(tag) }
+        // 使用 AtomicLong 生成单调递增的版本号，配合 Versioned 包装类
+        // 避免直接对标签字符串使用 === 引用比较的隐患：
+        // - 字符串字面量被 JVM intern，不同来源的相同字符串 === 行为不可预测
+        // - 动态构建的字符串（如 "tag_$id"）每次都是不同引用
+        val versionCounter = AtomicLong(0)
+        // 使用 AtomicReference 保存最新的 Versioned 包装对象，确保线程安全
+        val latestVersioned = AtomicReference<Versioned<String>?>(null)
+        val liveData = MutableLiveData<Versioned<String>>().apply {
+            observe(lifecycleOwner) { versioned ->
+                // 通过版本号（Long 值比较）判断是否为最新标签
+                // 语义清晰且不依赖 JVM 引用相等的实现细节
+                if (versioned != null && versioned.version == latestVersioned.get()?.version) {
+                    coroutineScope.launch { block(versioned.value) }
                 }
             }
         }
@@ -407,8 +424,11 @@ internal fun LifecycleOwner.receiveTagLiveImpl(
                 }
                 .collect { busEvent ->
                     val tag = busEvent.tag ?: return@collect
-                    latestTagContainer.set(tag)
-                    liveData.postValue(tag)
+                    // 创建带版本号的包装对象，版本号单调递增保证唯一性
+                    val versioned = Versioned(tag, versionCounter.incrementAndGet())
+                    // 先更新最新版本引用，再通过 LiveData 通知观察者
+                    latestVersioned.set(versioned)
+                    liveData.postValue(versioned)
                 }
         }
     } else {
